@@ -1,0 +1,57 @@
+name: List FNNAS dtb Files
+
+on:
+  workflow_dispatch:  # 手动触发
+
+permissions:
+  contents: read
+
+jobs:
+  list-dtb:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-utils gh
+
+    - name: 获取最新 ophub/fnnas release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # 获取最新 release tag
+        LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
+        echo "最新 release tag: $LATEST_TAG"
+        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+    - name: 下载最新固件
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release download "$LATEST_TAG" \
+          --repo ophub/fnnas \
+          --pattern '*renegade-rk3328*.img.gz'
+        IMG_GZ=$(ls *renegade-rk3328*.img.gz)
+        echo "下载完成: $IMG_GZ"
+        echo "IMG_GZ=$IMG_GZ" >> $GITHUB_ENV
+
+    - name: 列出 /dtb/rockchip 下所有文件
+      env:
+        IMG_GZ: ${{ env.IMG_GZ }}
+      run: |
+        IMG="${IMG_GZ%.gz}"
+        gzip -d "$IMG_GZ"
+
+        sudo mkdir -p /mnt/boot
+        LOOP=$(sudo losetup -fP --show "$IMG")
+        sudo mount "${LOOP}p1" /mnt/boot
+
+        echo "===== /dtb/rockchip 下的文件 ====="
+        find /mnt/boot/dtb/rockchip -type f -exec basename {} \;
+
+        sudo umount /mnt/boot
+        sudo losetup -d "$LOOP"
