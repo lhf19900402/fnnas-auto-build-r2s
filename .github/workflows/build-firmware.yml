@@ -3,6 +3,10 @@ name: Build FNNAS Firmware
 on:
   workflow_dispatch:
 
+# 🔑 关键：允许创建 release / tag / 上传资产
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,7 +24,6 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        # 获取最新 release tag
         LATEST_TAG=$(gh release list \
           --repo ophub/fnnas \
           --limit 1 \
@@ -29,48 +32,30 @@ jobs:
 
         echo "最新 release tag: $LATEST_TAG"
 
-        # 下载最新 release 中包含 renegade-rk3328 的镜像
         gh release download "$LATEST_TAG" \
           --repo ophub/fnnas \
           --pattern '*renegade-rk3328*.img.gz'
 
-        ls -lh
-
     - name: 解压镜像
-      run: |
-        gzip -d *.img.gz
-        ls -lh
+      run: gzip -d *.img.gz
 
     - name: 挂载镜像并修改 armbianEnv.txt
       run: |
         IMG=$(ls *.img)
-        echo "镜像文件: $IMG"
-
         LOOP=$(sudo losetup -fP "$IMG" --show)
-        echo "使用 loop 设备: $LOOP"
 
         mkdir mnt
         sudo mount "${LOOP}p1" mnt
-
-        echo "原始 fdtfile:"
-        sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
-
-        sudo cp mnt/armbianEnv.txt mnt/armbianEnv.txt.bak
 
         sudo sed -i -E \
           's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' \
           mnt/armbianEnv.txt
 
-        echo "修改后的 fdtfile:"
-        sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
-
         sudo umount mnt
         sudo losetup -d "$LOOP"
 
     - name: 重新压缩镜像
-      run: |
-        gzip *.img
-        ls -lh
+      run: gzip *.img
 
     - name: 创建新的 Release 并上传固件
       uses: softprops/action-gh-release@v1
