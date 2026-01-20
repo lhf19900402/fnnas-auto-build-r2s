@@ -2,15 +2,6 @@ name: Build FNNAS Firmware
 
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: '源仓库 release tag'
-        required: true
-        default: 'v0.0.0'
-      asset_pattern:
-        description: '要下载的 asset 模式'
-        required: true
-        default: 'fnnas_rockchip_renegade-rk3328*.img.gz'
 
 jobs:
   build:
@@ -23,46 +14,54 @@ jobs:
     - name: 安装依赖
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-utils
+        sudo apt-get install -y qemu-utils parted gh
 
-    - name: 下载 Release Asset
+    - name: 获取最新 Release 并下载 renagade-rk3328 镜像
       run: |
-        gh release download ${{ github.event.inputs.release_tag }} \
-          --repo ophub/fnnas \
-          --pattern "${{ github.event.inputs.asset_pattern }}"
+        # 获取最新 release tag
+        LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
+        echo "最新 release: $LATEST_TAG"
+
+        # 下载最新 release 中匹配 renegade-rk3328 的 asset
+        gh release download $LATEST_TAG --repo ophub/fnnas --pattern '*renegade-rk3328*.img.gz'
 
     - name: 解压镜像
-      run: |
-        gzip -d *.img.gz
+      run: gzip -d *.img.gz
 
-    - name: 挂载镜像并修改 boot txt
+    - name: 挂载镜像并修改 armbianEnv.txt
       run: |
         IMG=$(ls *.img)
         echo "镜像文件: $IMG"
 
-        # 创建 loop
-        sudo losetup -fP $IMG --show
-        LOOP=$(sudo losetup -l | grep "$IMG" | awk '{print $1}')
+        # 创建 loop 设备并挂载 boot 分区
+        LOOP=$(sudo losetup -fP $IMG --show)
         echo "使用 loop 设备: $LOOP"
 
-        # 挂载第一个分区（一般 boot 是 p1）
         mkdir mnt
         sudo mount ${LOOP}p1 mnt
 
-        # 修改 txt（按照你需要替换 old -> new）
-        sudo sed -i 's/old_text/new_text/' mnt/boot/*.txt
+        # 备份原始 armbianEnv.txt
+        sudo cp mnt/armbianEnv.txt mnt/armbianEnv.txt.bak
 
+        # 替换 fdtfile
+        sudo sed -i -E 's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' mnt/armbianEnv.txt
+
+        # 显示修改结果
+        echo "修改后的内容:"
+        sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
+
+        # 卸载 & 清理
         sudo umount mnt
         sudo losetup -d $LOOP
 
     - name: 重新压缩镜像
-      run: |
-        gzip -k *.img
+      run: gzip -k *.img
 
-    - name: 创建新的 Release 并上传
+    - name: 创建新的 Release 并上传固件
       uses: softprops/action-gh-release@v1
       with:
         tag_name: rebuilt-${{ github.run_id }}
+        name: rebuilt-firmware-${{ github.run_id }}.img.gz
         files: '*.img.gz'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
