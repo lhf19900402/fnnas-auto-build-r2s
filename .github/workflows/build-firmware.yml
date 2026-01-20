@@ -17,11 +17,12 @@ jobs:
         sudo apt-get install -y qemu-utils parted gh
 
     - name: 获取最新 Release 并下载 renegade-rk3328 镜像
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        # 获取最新 release tag（公开仓库，使用 --public）
+        # 获取最新 release tag
         LATEST_TAG=$(gh release list \
           --repo ophub/fnnas \
-          --public \
           --limit 1 \
           --json tagName \
           -q '.[0].tagName')
@@ -31,7 +32,6 @@ jobs:
         # 下载最新 release 中包含 renegade-rk3328 的镜像
         gh release download "$LATEST_TAG" \
           --repo ophub/fnnas \
-          --public \
           --pattern '*renegade-rk3328*.img.gz'
 
         ls -lh
@@ -46,22 +46,17 @@ jobs:
         IMG=$(ls *.img)
         echo "镜像文件: $IMG"
 
-        # 创建 loop 设备并自动映射分区
         LOOP=$(sudo losetup -fP "$IMG" --show)
         echo "使用 loop 设备: $LOOP"
 
         mkdir mnt
-
-        # 挂载 boot 分区（通常是 p1）
         sudo mount "${LOOP}p1" mnt
 
         echo "原始 fdtfile:"
         sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
 
-        # 备份
         sudo cp mnt/armbianEnv.txt mnt/armbianEnv.txt.bak
 
-        # 修改 fdtfile
         sudo sed -i -E \
           's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' \
           mnt/armbianEnv.txt
@@ -69,7 +64,6 @@ jobs:
         echo "修改后的 fdtfile:"
         sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
 
-        # 卸载 & 清理
         sudo umount mnt
         sudo losetup -d "$LOOP"
 
