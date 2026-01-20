@@ -1,0 +1,68 @@
+name: Build FNNAS Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '源仓库 release tag'
+        required: true
+        default: 'v0.0.0'
+      asset_pattern:
+        description: '要下载的 asset 模式'
+        required: true
+        default: 'fnnas_rockchip_renegade-rk3328*.img.gz'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-utils
+
+    - name: 下载 Release Asset
+      run: |
+        gh release download ${{ github.event.inputs.release_tag }} \
+          --repo ophub/fnnas \
+          --pattern "${{ github.event.inputs.asset_pattern }}"
+
+    - name: 解压镜像
+      run: |
+        gzip -d *.img.gz
+
+    - name: 挂载镜像并修改 boot txt
+      run: |
+        IMG=$(ls *.img)
+        echo "镜像文件: $IMG"
+
+        # 创建 loop
+        sudo losetup -fP $IMG --show
+        LOOP=$(sudo losetup -l | grep "$IMG" | awk '{print $1}')
+        echo "使用 loop 设备: $LOOP"
+
+        # 挂载第一个分区（一般 boot 是 p1）
+        mkdir mnt
+        sudo mount ${LOOP}p1 mnt
+
+        # 修改 txt（按照你需要替换 old -> new）
+        sudo sed -i 's/old_text/new_text/' mnt/boot/*.txt
+
+        sudo umount mnt
+        sudo losetup -d $LOOP
+
+    - name: 重新压缩镜像
+      run: |
+        gzip -k *.img
+
+    - name: 创建新的 Release 并上传
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: rebuilt-${{ github.run_id }}
+        files: '*.img.gz'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
