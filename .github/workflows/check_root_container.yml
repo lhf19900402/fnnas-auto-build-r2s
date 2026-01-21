@@ -1,17 +1,17 @@
-name: Check MiniDLNA Config in Release Firmware (read-only, low space)
+name: Find root_container in Firmware (read-only, with offset)
 
 on:
   workflow_dispatch:
 
 jobs:
-  check-minidlna:
+  find-root-container:
     runs-on: ubuntu-latest
 
     steps:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl p7zip-full
+          sudo apt-get install -y jq curl gzip xxd
 
       - name: Get release asset URL
         id: get_asset
@@ -34,17 +34,18 @@ jobs:
       - name: Uncompress firmware
         run: gzip -d ./firmware.img.gz
 
-      - name: Try 7z extraction of minidlna.conf
+      - name: Search root_container and media_dir with offsets
         run: |
-          mkdir -p tmp_extract
-          7z e firmware.img usr/trim/etc/minidlna.conf -o./tmp_extract || echo "7z extraction failed"
-          if [ -f tmp_extract/minidlna.conf ]; then
-            echo "✅ Found minidlna.conf via 7z"
-            echo "===== root_container ====="
-            grep '^root_container' tmp_extract/minidlna.conf || echo "root_container not set"
-            echo "===== media_dir list ====="
-            grep '^media_dir' tmp_extract/minidlna.conf || echo "no media_dir set"
-          else
-            echo "⚠️ minidlna.conf not found via 7z, trying grep search inside img"
-            grep -a -C 3 "root_container" firmware.img || echo "root_container not found"
-          fi
+          echo "Searching for root_container in firmware.img ..."
+          # 输出偏移 + 上下文
+          grep -aob "root_container" firmware.img | while IFS=: read -r offset line; do
+            echo "✅ Found root_container at byte offset $offset:"
+            # 显示整行内容
+            echo "$line"
+          done
+
+          echo "Searching for media_dir in firmware.img ..."
+          grep -aob "media_dir" firmware.img | while IFS=: read -r offset line; do
+            echo "✅ Found media_dir at byte offset $offset:"
+            echo "$line"
+          done
