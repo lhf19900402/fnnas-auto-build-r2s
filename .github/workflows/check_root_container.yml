@@ -1,17 +1,17 @@
-name: Check MiniDLNA Config in Release Firmware (read-only)
+name: Check MiniDLNA Config in Release Firmware (read-only, binwalk)
 
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
 
 jobs:
   check-minidlna:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install tools
+      - name: Install required tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl p7zip-full squashfs-tools
+          sudo apt-get install -y jq curl gzip binwalk p7zip-full
 
       - name: Get release asset URL
         id: get_asset
@@ -26,6 +26,7 @@ jobs:
             exit 1
           fi
           echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
+          echo "Downloading: $ASSET_URL"
 
       - name: Download firmware
         run: curl -L -o ./firmware.img.gz "${{ steps.get_asset.outputs.asset_url }}"
@@ -33,28 +34,21 @@ jobs:
       - name: Uncompress firmware
         run: gzip -d ./firmware.img.gz
 
-      - name: Extract minidlna.conf (squashfs or embedded)
+      - name: Extract firmware with binwalk
         run: |
-          # 尝试用 unsquashfs 提取
-          mkdir -p squashfs_root
-          unsquashfs -f -d squashfs_root firmware.img || echo "unsquashfs failed, trying 7z"
-          
-          # 如果 unsquashfs 不行，用 7z 提取
-          if [ ! -f "squashfs_root/usr/trim/etc/minidlna.conf" ]; then
-            mkdir -p tmp_extract
-            7z x firmware.img -o./tmp_extract usr/trim/etc/minidlna.conf || echo "7z extraction failed"
-          fi
+          mkdir -p extracted_fw
+          binwalk -e firmware.img -C extracted_fw || echo "binwalk extraction finished"
 
-      - name: Display root_container and media_dir
+      - name: Search minidlna.conf
         run: |
-          if [ -f "squashfs_root/usr/trim/etc/minidlna.conf" ]; then
-            echo "===== Found minidlna.conf in squashfs ====="
-            grep '^root_container' squashfs_root/usr/trim/etc/minidlna.conf || echo "root_container not set"
-            grep '^media_dir' squashfs_root/usr/trim/etc/minidlna.conf || echo "no media_dir set"
-          elif [ -f "tmp_extract/usr/trim/etc/minidlna.conf" ]; then
-            echo "===== Found minidlna.conf via 7z extraction ====="
-            grep '^root_container' tmp_extract/usr/trim/etc/minidlna.conf || echo "root_container not set"
-            grep '^media_dir' tmp_extract/usr/trim/etc/minidlna.conf || echo "no media_dir set"
+          # 尝试在 binwalk 提取的目录里找到 minidlna.conf
+          CONF_PATH=$(find extracted_fw -type f -name "minidlna.conf" | head -n1)
+          if [ -f "$CONF_PATH" ]; then
+            echo "✅ Found minidlna.conf at $CONF_PATH"
+            echo "===== root_container ====="
+            grep '^root_container' "$CONF_PATH" || echo "root_container not set"
+            echo "===== media_dir list ====="
+            grep '^media_dir' "$CONF_PATH" || echo "no media_dir set"
           else
-            echo "❌ minidlna.conf not found in firmware"
+            echo "❌ minidlna.conf not found in extracted firmware"
           fi
