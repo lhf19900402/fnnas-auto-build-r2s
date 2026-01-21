@@ -1,4 +1,4 @@
-name: Check MiniDLNA Config in Release Firmware (read-only, binwalk)
+name: Check MiniDLNA Config in Release Firmware (read-only, low space)
 
 on:
   workflow_dispatch:
@@ -8,10 +8,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install required tools
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl gzip binwalk p7zip-full
+          sudo apt-get install -y jq curl p7zip-full
 
       - name: Get release asset URL
         id: get_asset
@@ -34,21 +34,17 @@ jobs:
       - name: Uncompress firmware
         run: gzip -d ./firmware.img.gz
 
-      - name: Extract firmware with binwalk
+      - name: Try 7z extraction of minidlna.conf
         run: |
-          mkdir -p extracted_fw
-          binwalk -e firmware.img -C extracted_fw || echo "binwalk extraction finished"
-
-      - name: Search minidlna.conf
-        run: |
-          # 尝试在 binwalk 提取的目录里找到 minidlna.conf
-          CONF_PATH=$(find extracted_fw -type f -name "minidlna.conf" | head -n1)
-          if [ -f "$CONF_PATH" ]; then
-            echo "✅ Found minidlna.conf at $CONF_PATH"
+          mkdir -p tmp_extract
+          7z e firmware.img usr/trim/etc/minidlna.conf -o./tmp_extract || echo "7z extraction failed"
+          if [ -f tmp_extract/minidlna.conf ]; then
+            echo "✅ Found minidlna.conf via 7z"
             echo "===== root_container ====="
-            grep '^root_container' "$CONF_PATH" || echo "root_container not set"
+            grep '^root_container' tmp_extract/minidlna.conf || echo "root_container not set"
             echo "===== media_dir list ====="
-            grep '^media_dir' "$CONF_PATH" || echo "no media_dir set"
+            grep '^media_dir' tmp_extract/minidlna.conf || echo "no media_dir set"
           else
-            echo "❌ minidlna.conf not found in extracted firmware"
+            echo "⚠️ minidlna.conf not found via 7z, trying grep search inside img"
+            grep -a -C 3 "root_container" firmware.img || echo "root_container not found"
           fi
