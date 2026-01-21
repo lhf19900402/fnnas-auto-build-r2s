@@ -1,7 +1,7 @@
 name: Detect Init Type in Firmware
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   detect-init:
@@ -9,6 +9,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binwalk gzip
 
       - name: Download firmware release via API
         run: |
