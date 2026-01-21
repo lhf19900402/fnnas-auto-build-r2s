@@ -1,51 +1,45 @@
-name: Find root_container in Firmware (read-only, with offset)
+name: Detect Init Type in Firmware
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手动触发
 
 jobs:
-  find-root-container:
+  detect-init:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl gzip xxd
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Get release asset URL
-        id: get_asset
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download firmware release
         run: |
-          RELEASE_JSON=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/fnnas_v338")
-          ASSET_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | endswith(".img.gz")) | .browser_download_url' | head -n1)
-          if [ -z "$ASSET_URL" ]; then
-            echo "❌ No img.gz asset found!"
-            exit 1
-          fi
-          echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
-          echo "Downloading: $ASSET_URL"
-
-      - name: Download firmware
-        run: curl -L -o ./firmware.img.gz "${{ steps.get_asset.outputs.asset_url }}"
+          # 自动获取最新 release asset
+          ASSET_URL=$(gh release view fnnas_v338 --json assets -q '.assets[].browser_download_url | select(contains(".img.gz"))')
+          echo "Downloading firmware from $ASSET_URL ..."
+          curl -L -o firmware.img.gz "$ASSET_URL"
 
       - name: Uncompress firmware
-        run: gzip -d ./firmware.img.gz
+        run: gzip -d firmware.img.gz
 
-      - name: Search root_container and media_dir with offsets
+      - name: Extract rootfs using binwalk
         run: |
-          echo "Searching for root_container in firmware.img ..."
-          # 输出偏移 + 上下文
-          grep -aob "root_container" firmware.img | while IFS=: read -r offset line; do
-            echo "✅ Found root_container at byte offset $offset:"
-            # 显示整行内容
-            echo "$line"
-          done
+          mkdir rootfs_extract
+          binwalk -e firmware.img -C rootfs_extract
 
-          echo "Searching for media_dir in firmware.img ..."
-          grep -aob "media_dir" firmware.img | while IFS=: read -r offset line; do
-            echo "✅ Found media_dir at byte offset $offset:"
-            echo "$line"
-          done
+      - name: Detect init type
+        id: detect
+        run: |
+          ROOTFS=$(find rootfs_extract -type d -name "*squashfs-root*" | head -n1)
+          INIT_TYPE=""
+          if [ -d "$ROOTFS/etc/init.d" ] || [ -f "$ROOTFS/etc/rc.local" ]; then
+            INIT_TYPE="initd"
+          elif [ -d "$ROOTFS/usr/lib/systemd" ] || [ -d "$ROOTFS/lib/systemd" ]; then
+            INIT_TYPE="systemd"
+          else
+            INIT_TYPE="unknown"
+          fi
+          echo "Detected init type: $INIT_TYPE"
+          echo "init_type=$INIT_TYPE" >> $GITHUB_OUTPUT
+
+      - name: Show result
+        run: |
+          echo "Init type detected: ${{ steps.detect.outputs.init_type }}"
