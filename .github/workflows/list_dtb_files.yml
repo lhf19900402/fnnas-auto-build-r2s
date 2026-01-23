@@ -79,7 +79,7 @@ jobs:
         sudo losetup -d "$LOOP"
 
     - name: 上传 boot 分区 artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: boot_partition
         path: ${{ env.ARTIFACT }}
