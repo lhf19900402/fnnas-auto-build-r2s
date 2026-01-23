@@ -1,4 +1,4 @@
-name: List FNNAS dtb Files
+name: List FNNAS dtb Files (Optimized)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     - name: 安装依赖
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-utils gh gzip zip
+        sudo apt-get install -y qemu-utils gh gzip zip p7zip-full
 
     - name: 获取最新 ophub/fnnas release
       env:
@@ -39,44 +39,32 @@ jobs:
         echo "下载完成: $IMG_GZ"
         echo "IMG_GZ=$IMG_GZ" >> $GITHUB_ENV
 
-    - name: 列出 /dtb/rockchip 下所有文件
+    - name: 解压 dtb 文件并列出 /dtb/rockchip
       env:
         IMG_GZ: ${{ env.IMG_GZ }}
       run: |
-        IMG="${IMG_GZ%.gz}"
-        gzip -dk "$IMG_GZ"
+        # 创建临时目录
+        TMPDIR=$(mktemp -d)
+        IMG="${TMPDIR}/firmware.img"
 
-        sudo mkdir -p /mnt/boot
-        LOOP=$(sudo losetup -fP --show "$IMG")
-        sudo partprobe "$LOOP"
-        sudo mount "${LOOP}p1" /mnt/boot
+        # 解压 img.gz
+        gzip -dc "$IMG_GZ" > "$IMG"
+
+        # 创建临时目录提取 boot 分区内容
+        EXTRACT_DIR="${TMPDIR}/boot"
+        mkdir -p "$EXTRACT_DIR"
+
+        # 使用 7z 直接提取 boot/dtb/rockchip
+        7z x "$IMG" "boot/dtb/rockchip/*" -o"$EXTRACT_DIR" > /dev/null
 
         echo "===== /dtb/rockchip 下的文件 ====="
-        find /mnt/boot/dtb/rockchip -type f -exec basename {} \; | sort
+        find "$EXTRACT_DIR/dtb/rockchip" -type f -exec basename {} \; | sort
 
-        sudo umount /mnt/boot
-        sudo losetup -d "$LOOP"
-
-    - name: 打包 boot 分区并上传 artifact
-      env:
-        IMG_GZ: ${{ env.IMG_GZ }}
-      run: |
-        IMG="${IMG_GZ%.gz}"
-
-        sudo mkdir -p /mnt/boot
-        LOOP=$(sudo losetup -fP --show "$IMG")
-        sudo partprobe "$LOOP"
-        sudo mount "${LOOP}p1" /mnt/boot
-
+        # 将 boot 分区打包为 artifact
         ARTIFACT_NAME="boot_partition.zip"
-        sudo zip -r "$ARTIFACT_NAME" /mnt/boot
+        zip -r "$ARTIFACT_NAME" "$EXTRACT_DIR"
 
-        sudo cp "$ARTIFACT_NAME" .
-        sudo chown $USER:$USER "$ARTIFACT_NAME"
         echo "ARTIFACT=$ARTIFACT_NAME" >> $GITHUB_ENV
-
-        sudo umount /mnt/boot
-        sudo losetup -d "$LOOP"
 
     - name: 上传 boot 分区 artifact
       uses: actions/upload-artifact@v4
