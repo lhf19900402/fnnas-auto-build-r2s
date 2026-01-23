@@ -1,4 +1,4 @@
-name: List FNNAS dtb Files (Optimized)
+name: List FNNAS dtb Files
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     - name: 安装依赖
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-utils gh gzip zip p7zip-full
+        sudo apt-get install -y qemu-utils gh gzip zip
 
     - name: 获取最新 ophub/fnnas release
       env:
@@ -39,32 +39,38 @@ jobs:
         echo "下载完成: $IMG_GZ"
         echo "IMG_GZ=$IMG_GZ" >> $GITHUB_ENV
 
-    - name: 解压 dtb 文件并列出 /dtb/rockchip
+    - name: 列出 dtb 文件并打包 boot 分区
       env:
         IMG_GZ: ${{ env.IMG_GZ }}
       run: |
-        # 创建临时目录
-        TMPDIR=$(mktemp -d)
-        IMG="${TMPDIR}/firmware.img"
+        IMG="${IMG_GZ%.gz}"
+        gzip -dk "$IMG_GZ"
 
-        # 解压 img.gz
-        gzip -dc "$IMG_GZ" > "$IMG"
+        sudo mkdir -p /mnt/boot
+        LOOP=$(sudo losetup -fP --show "$IMG")
+        sudo partprobe "$LOOP"
 
-        # 创建临时目录提取 boot 分区内容
-        EXTRACT_DIR="${TMPDIR}/boot"
-        mkdir -p "$EXTRACT_DIR"
+        # 检查 p1 分区是否存在
+        if [ ! -b "${LOOP}p1" ]; then
+          echo "错误: 分区 p1 不存在！"
+          exit 1
+        fi
 
-        # 使用 7z 直接提取 boot/dtb/rockchip
-        7z x "$IMG" "boot/dtb/rockchip/*" -o"$EXTRACT_DIR" > /dev/null
+        sudo mount "${LOOP}p1" /mnt/boot
 
+        # 列出 dtb 文件
         echo "===== /dtb/rockchip 下的文件 ====="
-        find "$EXTRACT_DIR/dtb/rockchip" -type f -exec basename {} \; | sort
+        find /mnt/boot/dtb/rockchip -type f -exec basename {} \; | sort
 
-        # 将 boot 分区打包为 artifact
+        # 打包 boot 分区
         ARTIFACT_NAME="boot_partition.zip"
-        zip -r "$ARTIFACT_NAME" "$EXTRACT_DIR"
-
+        sudo zip -r "$ARTIFACT_NAME" /mnt/boot
+        sudo chown $USER:$USER "$ARTIFACT_NAME"
         echo "ARTIFACT=$ARTIFACT_NAME" >> $GITHUB_ENV
+
+        # 卸载和释放 loop
+        sudo umount /mnt/boot
+        sudo losetup -d "$LOOP"
 
     - name: 上传 boot 分区 artifact
       uses: actions/upload-artifact@v4
