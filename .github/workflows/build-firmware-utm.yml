@@ -96,13 +96,14 @@ jobs:
           sudo umount mnt_p2
           sudo losetup -D
 
-      - name: Compress and Finalize
+      - name: Compress Final Image
         run: |
-          NEW_NAME="fn_utm_${{ env.VERSION }.img"
-          echo "🗜️ 正在重新打包为 $NEW_NAME.xz ..."
-          # 使用 xz 压缩，-T0 表示使用所有 CPU 核心提高速度
-          xz -z -T0 -c source.img > "${NEW_NAME}.xz"
-          echo "FINAL_IMG=${NEW_NAME}.xz" >> $GITHUB_ENV
+          # 注意：在 run 块里，直接用 $VERSION 引用之前存入 GITHUB_ENV 的变量
+          FINAL_NAME="fn_utm_${VERSION}.img.xz"
+          echo "🗜️ 正在重新打包为 $FINAL_NAME ..."
+          xz -z -T0 -v -c source.img > "$FINAL_NAME"
+          # 必须存入 GITHUB_ENV，下个 Step 才能看到
+          echo "FINAL_IMG_NAME=$FINAL_NAME" >> $GITHUB_ENV
           echo "✅ 打包完成"
 
       - name: Upload Artifacts
@@ -110,6 +111,6 @@ jobs:
         with:
           name: fnos-utm-v${{ env.VERSION }}
           path: |
-            ${{ env.FINAL_IMG }}
+            ${{ env.FINAL_IMG_NAME }}
             ${{ env.RAW_KERNEL }}
             ${{ env.RAW_INITRD }}
