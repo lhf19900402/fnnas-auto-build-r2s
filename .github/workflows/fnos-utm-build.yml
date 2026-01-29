@@ -1,0 +1,115 @@
+name: Patch fNOS Image for UTM
+on:
+  workflow_dispatch: # 手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fdisk xz-utils grep sed
+
+      - name: Get Latest Release Info and Download
+        id: get_info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 正在搜索 ophub/fnnas 仓库中 fnnas_base_image 的最新附件..."
+          
+          # 获取 release 详情，并过滤出最新的 .img.xz 文件名
+          # 假设文件名格式如: fnnas-official-arm64-image_allwinner_317.img.xz
+          LATEST_ASSET=$(gh release view fnnas_base_image -R ophub/fnnas --json assets \
+            -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | sort -V | tail -n 1)
+          
+          if [ -z "$LATEST_ASSET" ]; then
+            echo "❌ 错误：在 ophub/fnnas 的 fnnas_base_image 中没找到 .img.xz 文件"
+            exit 1
+          fi
+          echo "✅ 发现最新附件: $LATEST_ASSET"
+
+          # 提取版本号 (截取最后一个下划线到第一个点之间的数字)
+          # 例如从 ...allwinner_317.img.xz 提取出 317
+          VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)')
+          if [ -z "$VERSION" ]; then
+             echo "⚠️ 无法从文件名提取版本号，使用 timestamp 代替"
+             VERSION=$(date +%s)
+          fi
+          echo "✅ 提取版本号: $VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+          # 下载文件
+          echo "📥 正在下载附件..."
+          gh release download fnnas_base_image -R ophub/fnnas -p "$LATEST_ASSET" --clobber
+          echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
+
+      - name: Decompress and Patch Image
+        run: |
+          echo "📦 正在解压镜像: ${{ env.SOURCE_FILE }} ..."
+          unxz -c "${{ env.SOURCE_FILE }}" > source.img || { echo "❌ 解压失败"; exit 1; }
+
+          echo "🛠️ 正在设置 Loop 设备..."
+          sudo losetup -D
+          LOOP_DEV=$(sudo losetup -Pf --show source.img)
+          if [ -z "$LOOP_DEV" ]; then echo "❌ 关联 Loop 设备失败"; exit 1; fi
+          echo "✅ 关联到: $LOOP_DEV"
+
+          mkdir -p mnt_p1 mnt_p2
+
+          # 1. 提取内核 (p1)
+          echo "📂 正在挂载分区 1 并提取内核..."
+          sudo mount "${LOOP_DEV}p1" mnt_p1 || { echo "❌ 挂载 p1 失败"; exit 1; }
+          
+          KERNEL_PATH=$(sudo find mnt_p1 -name "vmlinuz-*" ! -name "*.old" | sort -V | tail -n 1)
+          INITRD_PATH=$(sudo find mnt_p1 -name "initrd.img-*" ! -name "*.old" | sort -V | tail -n 1)
+          
+          if [ -n "$KERNEL_PATH" ]; then
+            RAW_KERNEL=$(basename "$KERNEL_PATH")
+            RAW_INITRD=$(basename "$INITRD_PATH")
+            cp "$KERNEL_PATH" ./"$RAW_KERNEL"
+            cp "$INITRD_PATH" ./"$RAW_INITRD"
+            echo "RAW_KERNEL=$RAW_KERNEL" >> $GITHUB_ENV
+            echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
+            echo "✅ 成功提取内核: $RAW_KERNEL"
+          else
+            echo "❌ 错误：在 p1 未找到内核文件"; exit 1
+          fi
+          sudo umount mnt_p1
+
+          # 2. 修改系统配置 (p2)
+          echo "🛠️ 正在挂载分区 2 修正系统配置..."
+          sudo mount "${LOOP_DEV}p2" mnt_p2 || { echo "❌ 挂载 p2 失败"; exit 1; }
+          
+          # 修正 fstab
+          sudo sed -i 's/^.*\/boot/#&/' mnt_p2/etc/fstab
+          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vdb2/' mnt_p2/etc/fstab
+          
+          # 禁用服务
+          sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
+          sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_wayland.service
+          
+          echo "✅ fstab 和服务修正完成"
+          sudo umount mnt_p2
+          sudo losetup -D
+
+      - name: Compress and Finalize
+        run: |
+          NEW_NAME="fn_utm_${{ env.VERSION }.img"
+          echo "🗜️ 正在重新打包为 $NEW_NAME.xz ..."
+          # 使用 xz 压缩，-T0 表示使用所有 CPU 核心提高速度
+          xz -z -T0 -c source.img > "${NEW_NAME}.xz"
+          echo "FINAL_IMG=${NEW_NAME}.xz" >> $GITHUB_ENV
+          echo "✅ 打包完成"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnos-utm-v${{ env.VERSION }}
+          path: |
+            ${{ env.FINAL_IMG }}
+            ${{ env.RAW_KERNEL }}
+            ${{ env.RAW_INITRD }}
