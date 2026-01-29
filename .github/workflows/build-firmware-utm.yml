@@ -28,7 +28,12 @@ jobs:
           
           echo "🔍 正在搜索最新附件..."
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
-            -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | sort -V | tail -n 1)
+          -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | \
+          sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
+          sort -n | \
+          tail -n 1 | \
+          cut -d' ' -f2-)
+          echo "🎯 锁定最新镜像: $LATEST_ASSET"
           
           if [ -z "$LATEST_ASSET" ]; then
             echo "❌ 错误：未找到 .img.xz 附件"
