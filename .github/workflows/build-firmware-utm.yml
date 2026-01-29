@@ -2,6 +2,9 @@ name: Patch fNOS Image for UTM
 on:
   workflow_dispatch: # 手动触发
 
+permissions:
+  contents: write # 必须赋予写入权限才能发布 Release
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,7 +27,6 @@ jobs:
           TAG="fnnas_base_image"
           
           echo "🔍 正在搜索最新附件..."
-          # 获取最新 .img.xz 附件名
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | sort -V | tail -n 1)
           
@@ -33,9 +35,7 @@ jobs:
             exit 1
           fi
           
-          # 提取版本号 (例如从 allwinner_317.img.xz 提取 317)
           VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)' || echo "unknown")
-          
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
           
@@ -44,85 +44,70 @@ jobs:
 
       - name: Decompress and Patch Image
         run: |
-          echo "📦 正在解压镜像 (这可能需要 1-2 分钟)..."
+          echo "📦 正在解压镜像..."
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
-          rm "${{ env.SOURCE_FILE }}" # 释放空间
+          rm "${{ env.SOURCE_FILE }}"
 
-          echo "🛠️ 正在关联 Loop 设备..."
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
-          
           mkdir -p mnt_p1 mnt_p2
 
           # 1. 挂载 p1 提取原始内核
-          echo "📂 提取内核文件..."
           sudo mount "${LOOP_DEV}p1" mnt_p1
           KERNEL_PATH=$(sudo find mnt_p1 -name "vmlinuz-*" ! -name "*.old" | sort -V | tail -n 1)
           INITRD_PATH=$(sudo find mnt_p1 -name "initrd.img-*" ! -name "*.old" | sort -V | tail -n 1)
-          
           RAW_KERNEL=$(basename "$KERNEL_PATH")
           RAW_INITRD=$(basename "$INITRD_PATH")
           cp "$KERNEL_PATH" ./"$RAW_KERNEL"
           cp "$INITRD_PATH" ./"$RAW_INITRD"
-          
           echo "RAW_KERNEL=$RAW_KERNEL" >> $GITHUB_ENV
           echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
           sudo umount mnt_p1
 
-          # 2. 挂载 p2 修改配置
-          echo "✍️ 修改系统配置 (fstab & services)..."
+          # 2. 修改配置
           sudo mount "${LOOP_DEV}p2" mnt_p2
           sudo sed -i 's/^.*\/boot/#&/' mnt_p2/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vdb2/' mnt_p2/etc/fstab
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_wayland.service
-          
           sudo umount mnt_p2
           sudo losetup -D
-          echo "✅ 镜像手术完成"
 
       - name: Create README for UTM
         run: |
-          echo "📝 生成使用说明..."
           cat << EOF > README.md
-          # fNOS UTM 虚拟机使用说明 (v${VERSION})
-
-          此附件由 GitHub Actions 自动生成，专门用于 UTM 虚拟机的一键启动。
-
-          ## 📄 文件清单
-          1. **镜像文件**: fn_utm_${VERSION}.img.xz (使用前请先解压)
-          2. **内核文件**: ${RAW_KERNEL}
-          3. **Initrd文件**: ${RAW_INITRD}
-
-          ## 🚀 UTM 配置指南
-          1. **驱动器 (Drive)**: 导入解压后的镜像，接口选择 **VirtIO**。
-          2. **高级 (Advanced)**:
-             - 勾选 **"使用本地内核/initrd"**。
-             - **External Kernel**: 选择 \`${RAW_KERNEL}\`。
-             - **Initrd**: 选择 \`${RAW_INITRD}\`。
-          3. **启动参数 (Arguments)**:
-             - 在 UTM 参数框中填入以下带引号的完整内容：
-               \`\`\`text
-               "root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"
-               \`\`\`
-
-          ---
-          *Build Date: $(date)*
+          # fNOS UTM 使用说明 (v${VERSION})
+          此版本基于 ophub/fnnas v${VERSION} 自动构建。
+          
+          ## 🚀 启动参数 (Arguments)
+          \`\`\`text
+          "root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"
+          \`\`\`
+          更多详情请查看生成的完整说明。
           EOF
 
       - name: Compress Final Image
         run: |
           FINAL_NAME="fn_utm_${VERSION}.img.xz"
-          echo "🗜️ 重新打包镜像 (xz -T0)..."
           xz -z -T0 -v -c source.img > "$FINAL_NAME"
           echo "FINAL_IMG_NAME=$FINAL_NAME" >> $GITHUB_ENV
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: fnos-utm-v${{ env.VERSION }}
-          path: |
+          tag_name: fnnas_utm
+          name: fNOS UTM Optimized Images
+          body: |
+            ## 🚀 自动构建完成
+            - **原始版本**: ${{ env.VERSION }}
+            - **构建时间**: $(date)
+            - **内核**: ${{ env.RAW_KERNEL }}
+            - **参数**: `"root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"`
+          files: |
             ${{ env.FINAL_IMG_NAME }}
             ${{ env.RAW_KERNEL }}
             ${{ env.RAW_INITRD }}
             README.md
+          overwrite: true # 如果同名则覆盖，实现“更新”逻辑
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
