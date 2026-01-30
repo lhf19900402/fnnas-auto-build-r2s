@@ -136,7 +136,7 @@ jobs:
           tag_name: fnnas_utm
           name: fnnas_utm
           body: |
-            ## fnOS UTM虚拟机ARM版
+            fnOS UTM虚拟机ARM版
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
