@@ -1,1 +1,135 @@
-11
+name: Build FNNAS rk3328-nanopi-r2s
+
+on:
+  workflow_dispatch:  # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-utils parted gh
+
+    - name: 获取最新 ophub/fnnas release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # 获取最新 release tag（仅tag名包含rockchip）
+        LATEST_TAG=$(gh release list --repo ophub/fnnas --json tagName -q '.[] | select(.tagName | contains("rockchip")) | .tagName' | head -n 1)
+        echo "最新 release tag: $LATEST_TAG"
+        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+    - name: 下载最新固件
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release download "$LATEST_TAG" \
+          --repo ophub/fnnas \
+          --pattern '*renegade-rk3328*.img.gz'
+        IMG_GZ=$(ls *renegade-rk3328*.img.gz)
+        echo "下载完成: $IMG_GZ"
+        echo "IMG_GZ=$IMG_GZ" >> $GITHUB_ENV
+        echo "IMG=${IMG_GZ%.gz}" >> $GITHUB_ENV
+
+    - name: 解压固件
+      run: gzip -d "${{ env.IMG_GZ }}"
+
+    - name: 注入自定义 DTB 并修改 armbianEnv.txt
+      run: |
+        IMG="${{ env.IMG }}"
+        DTB_SOURCE="dtb/rk3328-nanopi-r2s.dtb"
+        
+        # 1. 检查仓库中源文件是否存在
+        if [ ! -f "$DTB_SOURCE" ]; then
+          echo "❌ 错误: 仓库中找不到源文件 $DTB_SOURCE"
+          exit 1
+        fi
+
+        # 2. 挂载镜像
+        LOOP=$(sudo losetup -fP "$IMG" --show)
+        mkdir -p mnt
+        sudo mount "${LOOP}p1" mnt
+        echo "✅ 镜像分区 p1 已挂载"
+
+        # 3. 严格检查镜像内的目录结构
+        TARGET_DIR="mnt/dtb/rockchip"
+        if [ ! -d "$TARGET_DIR" ]; then
+          echo "❌ 致命错误: 镜像内部路径 /dtb/rockchip 不存在！"
+          echo "原因: 固件结构与预期不符，为了防止注入失效，Workflow 将直接退出。"
+          sudo umount mnt
+          sudo losetup -d "$LOOP"
+          exit 1
+        else
+          echo "✅ 确认镜像内部路径 $TARGET_DIR 已存在"
+        fi
+
+        # 4. 拷贝文件并校验
+        echo "正在注入自定义 DTB..."
+        sudo cp -f "$DTB_SOURCE" "$TARGET_DIR/rk3328-nanopi-r2s.dtb"
+        if [ $? -eq 0 ]; then
+          echo "✅ DTB 文件注入成功: $TARGET_DIR/rk3328-nanopi-r2s.dtb"
+          # 打印 MD5 校验，确保拷贝的文件完整无误
+          md5sum "$DTB_SOURCE"
+          md5sum "$TARGET_DIR/rk3328-nanopi-r2s.dtb"
+        else
+          echo "❌ 错误: DTB 文件拷贝失败"
+          sudo umount mnt
+          sudo losetup -d "$LOOP"
+          exit 1
+        fi
+
+        # 5. 修改 armbianEnv.txt
+        echo "正在修改 armbianEnv.txt..."
+        if [ -f "mnt/armbianEnv.txt" ]; then
+          sudo sed -i -E 's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' mnt/armbianEnv.txt
+          echo "✅ armbianEnv.txt 修改后的内容如下:"
+          cat mnt/armbianEnv.txt
+        else
+          echo "❌ 错误: 在镜像分区中找不到 armbianEnv.txt"
+          sudo umount mnt
+          sudo losetup -d "$LOOP"
+          exit 1
+        fi
+
+        # 6. 卸载清理
+        sudo umount mnt
+        sudo losetup -d "$LOOP"
+        echo "🚀 修改流程圆满完成，镜像已安全卸载"
+
+    - name: 压缩并重命名固件
+      run: |
+        IMG="${{ env.IMG }}"
+        gzip "$IMG"
+        NEW_NAME=$(echo "$IMG.gz" | sed 's/rockchip_renegade-rk3328/rk3328-nanopi-r2s/')
+        mv "$IMG.gz" "$NEW_NAME"
+        echo "最终固件: $NEW_NAME"
+        echo "NEW_NAME=$NEW_NAME" >> $GITHUB_ENV
+
+    - name: 检查 release 是否存在，如果不存在则创建
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
+          echo "Release $LATEST_TAG 已存在，将覆盖上传文件。"
+        else
+          echo "Release $LATEST_TAG 不存在，创建新的 release。"
+          gh release create "$LATEST_TAG" --title "$LATEST_TAG" --notes "自动构建固件" || true
+        fi
+
+    - name: 上传固件（覆盖现有 release 文件）
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ env.LATEST_TAG }}   # release tag 与 ophub/fnnas 同步
+        name: ${{ env.LATEST_TAG }}       # release title 与 ophub/fnnas 同步
+        files: ${{ env.NEW_NAME }}        # 上传修改后的固件文件
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
