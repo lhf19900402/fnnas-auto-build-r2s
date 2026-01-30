@@ -78,7 +78,7 @@ jobs:
           
           # 修改 fstab：禁用 boot 挂载，并将根目录设为 /dev/vdb
           sudo sed -i 's/^.*\/boot/#&/' mnt_p2/etc/fstab
-          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vdb/' mnt_p2/etc/fstab
+          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_p2/etc/fstab
           
           # 移除物理开发板冲突服务
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
