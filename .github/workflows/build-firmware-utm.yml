@@ -115,7 +115,7 @@ jobs:
              请在 QEMU 参数最后一栏填入（包含引号）：
              \`\`\`text
              -append
-             "root=/dev/vda rw console=tty0 console=ttyAMA0 earlycon"
+             "root=/dev/vdb rw console=tty0 console=ttyAMA0 earlycon"
              \`\`\`
           EOF
 
@@ -140,7 +140,7 @@ jobs:
           tag_name: fnnas_utm
           name: fnnas_utm_${{ env.VERSION }}
           body: |
-            fnOS UTM 虚拟机 ARM 版 (基于官方最新镜像修复)
+            fnOS UTM 虚拟机 ARM 版 
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
