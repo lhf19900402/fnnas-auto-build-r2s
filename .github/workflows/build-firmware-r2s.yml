@@ -58,7 +58,7 @@ jobs:
       run: |
         IMG="${{ env.IMG }}"
         gzip "$IMG"
-        NEW_NAME=$(echo "$IMG.gz" | sed 's/renegade-rk3328/rk3328-nanopi-r2s/')
+        NEW_NAME=$(echo "$IMG.gz" | sed 's/rockchip_renegade-rk3328/rk3328-nanopi-r2s/')
         mv "$IMG.gz" "$NEW_NAME"
         echo "最终固件: $NEW_NAME"
         echo "NEW_NAME=$NEW_NAME" >> $GITHUB_ENV
