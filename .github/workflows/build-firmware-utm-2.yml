@@ -86,7 +86,7 @@ jobs:
           
           # 刷新依赖
           sudo depmod -a -b mnt_new 6.12.41-trim
-          rm -rf ./extracted_initrd
+          sudo rm -rf ./extracted_initrd
           # -------------------------------------------------------
 
           echo "🛠️ 正在应用虚拟机适配修正..."
