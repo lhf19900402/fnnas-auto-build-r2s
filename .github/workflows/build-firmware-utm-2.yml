@@ -63,29 +63,28 @@ jobs:
           sudo mount rootfs.img mnt_new
 
           # -------------------------------------------------------
-          # 2. 核心注入逻辑：从 initrd 动态提取模块
+          # 2. 核心注入逻辑：定点提取 Zstd 模块
           # -------------------------------------------------------
-          echo "💉 正在从 initrd 提取并注入老内核驱动模块..."
+          echo "💉 正在提取 Zstd 格式的 initrd 模块..."
           mkdir -p ./extracted_initrd
           
-          # 尝试多种解压方式 (zstd, gzip)，适配不同的 initrd 格式
-          # 注意路径指向 ./old_modules/
-          (cd ./extracted_initrd && zstdcat ../old_modules/${{ env.RAW_INITRD }} | sudo cpio -idm 2>/dev/null || \
-           cd ./extracted_initrd && zcat ../old_modules/${{ env.RAW_INITRD }} | sudo cpio -idm 2>/dev/null)
+          # 直接使用 zstdcat，并增加 --quiet 屏蔽无关警告
+          # 确保 RAW_INITRD 变量指向 ./old_modules/ 目录下的文件
+          zstdcat ./old_modules/${{ env.RAW_INITRD }} | (cd ./extracted_initrd && sudo cpio -idm --quiet 2>/dev/null)
 
-          # 定位提取出的模块文件夹 (自动匹配 usr/lib 或 lib)
+          # 动态定位 6.12.41-trim 目录的实际位置
           MOD_PATH=$(find ./extracted_initrd -name "6.12.41-trim" -type d | head -n 1)
 
           if [ -z "$MOD_PATH" ]; then
-              echo "❌ 错误：在 initrd 中未找到模块目录"
+              echo "❌ 错误：解压成功但未找到 6.12.41-trim 文件夹"
               exit 1
           fi
 
-          echo "🎯 找到模块目录: $MOD_PATH"
+          echo "🎯 提取成功，准备注入 rootfs..."
           sudo rm -rf mnt_new/lib/modules/6.12.41-trim
           sudo cp -a "$MOD_PATH" mnt_new/lib/modules/
           
-          # 刷新模块依赖关系
+          # 刷新依赖
           sudo depmod -a -b mnt_new 6.12.41-trim
           rm -rf ./extracted_initrd
           # -------------------------------------------------------
