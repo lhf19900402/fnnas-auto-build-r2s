@@ -1,4 +1,4 @@
-name: Patch fNOS Image for UTM
+name: Patch fNOS Image for UTM (基于老内核驱动)
 on:
   workflow_dispatch: # 手动触发
 
@@ -115,7 +115,7 @@ jobs:
           2. **外部内核**: 使用仓库中的 \`vmlinuz-6.12.41-trim\`。
           3. **Initrd**: 使用仓库中的 \`initrd.img-6.12.41-trim\`。
           4. **Arguments**: 
-             \`root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait\`
+             \"root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait\"
           EOF
 
       - name: Final Packaging (Tar + XZ)
