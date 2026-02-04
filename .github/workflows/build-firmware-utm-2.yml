@@ -15,11 +15,10 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fdisk xz-utils grep sed tar kmod
-          # 手动指定你存放在仓库里的老内核文件名
+          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd
           echo "RAW_KERNEL=vmlinuz-6.12.41-trim" >> $GITHUB_ENV
           echo "RAW_INITRD=initrd.img-6.12.41-trim" >> $GITHUB_ENV
-          echo "✅ 基础依赖库安装完成"
+          echo "✅ 依赖库与 zstd 安装完成"
 
       - name: Get Latest Release Info and Download
         id: get_info
@@ -54,50 +53,53 @@ jobs:
         run: |
           echo "📦 正在解压新镜像..."
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
-          rm "${{ env.SOURCE_FILE }}"
-
-          # 启动 Loop 设备并扫描分区
+          
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
           mkdir -p mnt_new
 
-          # 1. 提取 P2 分区并挂载
           echo "💾 正在提取并挂载 Rootfs..."
           sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
           sudo mount rootfs.img mnt_new
 
           # -------------------------------------------------------
-          # 2. 核心注入逻辑：将老内核驱动同步到新镜像中
+          # 2. 核心注入逻辑：从 initrd 动态提取模块
           # -------------------------------------------------------
-          echo "💉 正在注入老内核驱动模块 (6.12.41-trim)..."
+          echo "💉 正在从 initrd 提取并注入老内核驱动模块..."
+          mkdir -p ./extracted_initrd
           
-          # 假设你的老内核文件已经解压在仓库根目录的 'old_modules/6.12.41-trim' 下
-          # 如果你只有内核和 initrd，我们需要先从 initrd 或之前的环境中提取 modules
-          # 这里假设你已经把老模块文件夹放到了仓库里：
-          
-          # 先清理新镜像中不兼容的目录
+          # 尝试多种解压方式 (zstd, gzip)，适配不同的 initrd 格式
+          # 注意路径指向 ./old_modules/
+          (cd ./extracted_initrd && zstdcat ../old_modules/${{ env.RAW_INITRD }} | sudo cpio -idm 2>/dev/null || \
+           cd ./extracted_initrd && zcat ../old_modules/${{ env.RAW_INITRD }} | sudo cpio -idm 2>/dev/null)
+
+          # 定位提取出的模块文件夹 (自动匹配 usr/lib 或 lib)
+          MOD_PATH=$(find ./extracted_initrd -name "6.12.41-trim" -type d | head -n 1)
+
+          if [ -z "$MOD_PATH" ]; then
+              echo "❌ 错误：在 initrd 中未找到模块目录"
+              exit 1
+          fi
+
+          echo "🎯 找到模块目录: $MOD_PATH"
           sudo rm -rf mnt_new/lib/modules/6.12.41-trim
+          sudo cp -a "$MOD_PATH" mnt_new/lib/modules/
           
-          # 从仓库中拷贝确定的老模块进去 (保持 -a 权限同步)
-          sudo cp -a ./6.12.41-trim mnt_new/lib/modules/
-          
-          # 强制刷新模块依赖关系
+          # 刷新模块依赖关系
           sudo depmod -a -b mnt_new 6.12.41-trim
+          rm -rf ./extracted_initrd
           # -------------------------------------------------------
 
-          # 3. 按照你之前的逻辑进行适配修正
           echo "🛠️ 正在应用虚拟机适配修正..."
-          # 修正 fstab
           sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
-          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
-          # 强制将根挂载点改为 vda，防止 UUID 干扰
+          # 强行将所有挂载点修正为 vda，解决 UUID 导致的维护模式问题
           sudo sed -i 's/^UUID=[^ ]*/\/dev\/vda/' mnt_new/etc/fstab
+          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
           
-          # 移除物理硬件冲突服务
+          # 移除冲突服务
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
 
-          # 强制同步并卸载
           sync
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
@@ -122,14 +124,17 @@ jobs:
           PKG_DIR="fn_utm_${{ env.VERSION }}"
           mkdir -p "$PKG_DIR"
           
+          # 移动手术后的磁盘镜像
           mv rootfs.img "$PKG_DIR/"
-          mv "${{ env.RAW_KERNEL }}" "$PKG_DIR/"
-          mv "${{ env.RAW_INITRD }}" "$PKG_DIR/"
+          
+          # 从 old_modules 文件夹中拷贝启动文件
+          cp "./old_modules/${{ env.RAW_KERNEL }}" "$PKG_DIR/"
+          cp "./old_modules/${{ env.RAW_INITRD }}" "$PKG_DIR/"
+          
           mv README.md "$PKG_DIR/"
           
           echo "🗜️ 正在打包压缩..."
           tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
-          
           echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> $GITHUB_ENV
 
       - name: Upload to Release
