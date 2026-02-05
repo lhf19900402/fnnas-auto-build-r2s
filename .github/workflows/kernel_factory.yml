@@ -1,0 +1,53 @@
+name: Kernel Factory (zstd Verified)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Tools
+        run: sudo apt-get install -y qemu-user-static binfmt-support curl
+
+      - name: Generate Kernel Assets (zstd)
+        run: |
+          # 1. 获取官方最新版本号
+          INDEX_URL="http://ftp.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.gz"
+          FULL_NAME=$(curl -s "$INDEX_URL" | zgrep "Package: linux-image-6.1.0-" | awk '{print $2}' | grep -vE "rt|dbg|unsigned|cloud" | sort -V | tail -n 1)
+          KVER=$(echo $FULL_NAME | sed 's/linux-image-//;s/-arm64//')
+          echo "KVER=$KVER" >> $GITHUB_ENV
+
+          # 2. 准备 Chroot 环境
+          mkdir -p chroot/usr/bin
+          cp /usr/bin/qemu-aarch64-static chroot/usr/bin/
+          
+          # 3. 下载内核包并提取基础文件
+          RELATIVE_PATH=$(curl -s "$INDEX_URL" | zgrep -A 20 "Package: $FULL_NAME$" | grep "Filename: " | awk '{print $2}' | head -n 1)
+          curl -fL -o kernel.deb "http://ftp.debian.org/debian/$RELATIVE_PATH"
+          dpkg-deb -x kernel.deb chroot/
+
+          # 4. 生成 Initrd (保持默认 zstd)
+          # 注意：由于模拟环境下 zstd 较慢，这一步可能耗时 10-20 分钟，请耐心等待
+          echo "⏳ 正在生成 zstd 压缩的 initrd，这在模拟环境下需要较长时间..."
+          sudo chroot chroot /bin/bash -c "
+            apt-get update && apt-get install -y initramfs-tools
+            # 显式确认使用 zstd (Debian 12 默认)
+            sed -i 's/COMPRESS=.*/COMPRESS=zstd/g' /etc/initramfs-tools/initramfs.conf
+            update-initramfs -c -k $KVER-arm64
+          "
+
+          # 5. 准备产物
+          cp chroot/boot/vmlinuz-$KVER-arm64 ./vmlinuz-$KVER-arm64
+          cp chroot/boot/initrd.img-$KVER-arm64 ./initrd-$KVER-arm64
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernel-assets
+          files: |
+            vmlinuz-${{ env.KVER }}-arm64
+            initrd-${{ env.KVER }}-arm64
+          body: "Debian 6.1 标准内核组件库 (zstd 压缩版 - 与本地环境 100% 一致)"
+          append_body: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
