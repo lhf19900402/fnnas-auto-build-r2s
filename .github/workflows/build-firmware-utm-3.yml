@@ -36,40 +36,40 @@ jobs:
 
       - name: Decompress and Inject Kernel
         run: |
-          # --- 严格保留你的原解压逻辑 ---
-          echo "📦 正在解压镜像..."
+          # 1. 解压与挂载 (保留你的原逻辑)
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
-          
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
-          
-          echo "💾 正在按照原逻辑提取并挂载 Rootfs..."
           mkdir -p mnt_new
-          # 严格保留你原来的 dd p2 逻辑
           sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
           sudo mount rootfs.img mnt_new
 
-          # --- 动态抓取内核 (外部完成) ---
+          # 2. 【修复点】先在外面下载，再拷贝进去
           INDEX_URL="http://ftp.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.gz"
           RELATIVE_PATH=$(curl -s "$INDEX_URL" | zgrep -A 20 "Package: linux-image-6.1.0-.*-arm64$" | grep "Filename:" | head -n 1 | awk '{print $2}')
           KERNEL_URL="http://ftp.debian.org/debian/$RELATIVE_PATH"
-          curl -fL -o mnt_new/kernel.deb "$KERNEL_URL"
+          
+          echo "📥 正在下载内核包到宿主机..."
+          curl -fL -o kernel_arm64.deb "$KERNEL_URL"
+          
+          # 用 sudo 搬运，解决权限问题
+          sudo cp kernel_arm64.deb mnt_new/kernel.deb
 
-          # --- 使用验证通过的 Chroot 注入逻辑 ---
+          # 3. 进入 Chroot 注入
           sudo mount --bind /dev mnt_new/dev
           sudo mount --bind /proc mnt_new/proc
           sudo mount --bind /sys mnt_new/sys
           sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/
 
-          echo "🚀 正在 Chroot 内部执行原生 dpkg 安装..."
+          echo "🚀 执行 Chroot 安装..."
           sudo chroot mnt_new /usr/bin/dpkg -i --force-all /kernel.deb
 
-          # 提取引导文件
+          # 4. 提取与清理 (保留你的原逻辑)
           KVER=$(ls mnt_new/lib/modules/ | grep "6.1.0" | sort -V | tail -n 1)
-          cp mnt_new/boot/vmlinuz-$KVER ./vmlinuz-standard
-          cp mnt_new/boot/initrd.img-$KVER ./initrd-standard
+          sudo cp mnt_new/boot/vmlinuz-$KVER ./vmlinuz-standard
+          sudo cp mnt_new/boot/initrd.img-$KVER ./initrd-standard
+          sudo chown runner:docker ./vmlinuz-standard ./initrd-standard
 
-          # --- 修正与清理 ---
           sudo rm -rf mnt_new/lib/modules/6.12.*-trim
           sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
@@ -77,8 +77,7 @@ jobs:
           sudo umount -l mnt_new/dev mnt_new/proc mnt_new/sys
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
-          rm source.img mnt_new/kernel.deb
-          echo "✅ 注入完成"
+          rm source.img kernel_arm64.deb
 
       - name: Final Packaging
         run: |
