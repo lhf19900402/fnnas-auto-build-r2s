@@ -1,4 +1,4 @@
-name: Patch fNOS Image for UTM (Standard Kernel)
+name: Patch fNOS Image for UTM (Standard Kernel Optimized)
 on:
   workflow_dispatch:
 
@@ -16,7 +16,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd qemu-user-static binfmt-support
-          echo "✅ 依赖库与 QEMU 模拟器安装完成"
+          echo "✅ 依赖库与 QEMU 模拟器安装完成代"
 
       - name: Get Latest Release Info and Download
         id: get_info
@@ -36,61 +36,77 @@ jobs:
 
       - name: Decompress and Patch Image
         run: |
-          # ... (前面解压、losetup、mount 的步骤不变) ...
-
-          # --- 关键修正：跨架构支持 ---
-          # 1. 确保目录存在并拷贝模拟器 (去掉末尾斜杠，指定完整目标路径)
-          sudo mkdir -p mnt_new/usr/bin
-          sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/qemu-aarch64-static
+          echo "📦 正在解压新镜像..."
+          unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
           
-          # 赋予执行权限 (以防万一)
-          sudo chmod +x mnt_new/usr/bin/qemu-aarch64-static
+          sudo losetup -D
+          LOOP_DEV=$(sudo losetup -Pf --show source.img)
+          
+          # 1. 采用你验证过的提取挂载逻辑
+          echo "💾 正在提取并挂载 Rootfs..."
+          mkdir -p mnt_new
+          sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
+          sudo mount rootfs.img mnt_new
 
-          # 2. 准备 chroot 环境
+          # 2. 空间释放 (必须，否则装不下新内核)
+          sudo rm -rf mnt_new/lib/modules/6.12.41-trim
+
+          # 3. 准备跨架构 Chroot 环境 (增加 mkdir -p 保证路径存在)
+          echo "🔧 准备 Chroot 环境..."
+          sudo mkdir -p mnt_new/usr/bin mnt_new/dev mnt_new/proc mnt_new/sys
+          sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/
+          
           sudo mount --bind /dev mnt_new/dev
           sudo mount --bind /proc mnt_new/proc
           sudo mount --bind /sys mnt_new/sys
           sudo cp /etc/resolv.conf mnt_new/etc/resolv.conf
 
-          # 3. 现在执行 chroot (QEMU 会自动介入)
+          # 4. 在线安装标准内核
+          echo "🌐 正在在线安装 Debian 标准内核..."
           sudo chroot mnt_new /bin/bash -c "
             apt-get update
             apt-get install -y linux-image-arm64
             apt-get clean
           "
 
-          # 4. 提取内核文件
+          # 5. 提取产物
           cp mnt_new/boot/vmlinuz-*-arm64 ./vmlinuz-standard
           cp mnt_new/boot/initrd.img-*-arm64 ./initrd-standard
 
-          # 5. 适配 UTM (fstab)
-          # ... (保持原来的 sed 逻辑) ...
+          # 6. 应用虚拟机适配修正 (采用你验证过的逻辑)
+          echo "🛠️ 应用虚拟机适配修正..."
+          sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
+          sudo sed -i 's/^UUID=[^ ]*/\/dev\/vda/' mnt_new/etc/fstab
+          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
+          
+          # 移除冲突服务
+          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
+          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
 
-          # 6. 清理并卸载
-          sudo rm mnt_new/usr/bin/qemu-aarch64-static # 记得删掉拷贝进去的工具
+          # 7. 彻底清理卸载
+          echo "🧹 清理卸载..."
+          sudo rm -f mnt_new/usr/bin/qemu-aarch64-static
           sudo umount mnt_new/dev mnt_new/proc mnt_new/sys
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
-
-      - name: Create README
-        run: |
-          cat << EOF > README.md
-          # fNOS UTM ARM64 (Standard Kernel Edition)
-          
-          此版本已注入 Debian 标准内核，支持 NFS 服务。
-          
-          ## 🚀 UTM 配置指南
-          1. **驱动器**: 导入 \`rootfs.img\` (VirtIO 接口)。
-          2. **外部内核**: 使用 \`vmlinuz-standard\`。
-          3. **Initrd**: 使用 \`initrd-standard\`。
-          4. **启动参数**: "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
-          EOF
+          rm source.img
+          echo "✅ 补丁处理完成"
 
       - name: Final Packaging
         run: |
           PKG_DIR="fn_utm_${{ env.VERSION }}"
           mkdir -p "$PKG_DIR"
-          mv rootfs.img vmlinuz-standard initrd-standard README.md "$PKG_DIR/"
+          mv rootfs.img vmlinuz-standard initrd-standard "$PKG_DIR/"
+          
+          cat << EOF > "$PKG_DIR/README.md"
+          # fNOS UTM ARM64 (Standard Kernel)
+          
+          1. 磁盘: rootfs.img (VirtIO)
+          2. 内核: vmlinuz-standard
+          3. Initrd: initrd-standard
+          4. 参数: "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
+          EOF
+
           tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
           echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> $GITHUB_ENV
 
@@ -100,20 +116,8 @@ jobs:
           tag_name: fnnas_utm
           name: fnnas_utm_${{ env.VERSION }}
           body: |
-            ## 飞牛 OS (FnOS) UTM 虚拟机适配版
-            
-            **🔥 本版本特性：**
-            - **标准内核注入**：集成 Debian 官方 `6.1.0-xx-arm64` 内核。
-            
-            **🛠️ UTM 导入说明：**
-            1. **系统类型**: Linux / ARM64
-            2. **内核 (Kernel)**: 选择解压后的 `vmlinuz-standard`
-            3. **初始化镜像 (Initrd)**: 选择解压后的 `initrd-standard`
-            4. **磁盘 (Drive)**: 导入 `rootfs.img` (接口选择 **VirtIO**)
-            5. **启动参数 (Arguments)**: 
-               "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
-            
-            > 注意：系统盘空间有限 (3.1G)，请务必挂载额外的虚拟磁盘作为数据存储。
+            fnOS UTM 虚拟机补丁版 (集成标准内核)
+            版本: ${{ env.VERSION }}
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
