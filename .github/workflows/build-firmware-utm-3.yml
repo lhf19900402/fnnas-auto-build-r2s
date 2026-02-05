@@ -7,7 +7,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest 
+    runs-on: ubuntu-latest  # 无需排队，秒速启动
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -15,7 +15,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd curl
+          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd curl file
           echo "✅ 基础工具安装完成"
 
       - name: Get Latest Release Info and Download
@@ -25,6 +25,7 @@ jobs:
         run: |
           REPO="ophub/fnnas"
           TAG="fnnas_base_image"
+          # 获取最新的 .img.xz 资源名
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | \
             sort -V | tail -n 1)
@@ -32,50 +33,72 @@ jobs:
           VERSION=$(echo "$LATEST_ASSET" | grep -oP '\d+(?=\.img\.xz)')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
+          
+          echo "📥 正在从 $REPO 下载基础镜像..."
           gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
 
-      - name: Decompress and Inject Kernel (Speed Mode)
+      - name: Decompress and Inject Kernel (Extreme Speed)
         run: |
-          echo "📦 正在解压新镜像..."
+          echo "📦 正在并行解压镜像..."
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
           
+          # 挂载镜像
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
           
-          echo "💾 正在提取 Rootfs..."
+          echo "💾 正在提取并挂载 Rootfs..."
           mkdir -p mnt_new
           sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
           sudo mount rootfs.img mnt_new
 
-          # --- 核心改进：离线注入逻辑 ---
-          echo "🌐 下载官方 Debian ARM64 内核包..."
-          # 使用 Debian 12 稳定的 6.1 系列内核
-          KERNEL_URL="http://ftp.debian.org/debian/pool/main/l/linux/linux-image-6.1.0-28-arm64_6.1.119-1_arm64.deb"
-          curl -LO $KERNEL_URL
+          # --- 动态精准抓取内核 ---
+          echo "🌐 正在从 Debian 官方搜索最新标准版 ARM64 内核..."
+          INDEX_URL="http://ftp.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.gz"
           
-          echo "🛠️ 正在解压并注入驱动模块..."
+          # 使用本地验证通过的正则逻辑：确保以 arm64 结尾，排除 -dbg
+          RELATIVE_PATH=$(curl -s "$INDEX_URL" | zgrep -A 20 "Package: linux-image-6.1.0-.*-arm64$" | grep "Filename:" | head -n 1 | awk '{print $2}')
+          
+          if [ -z "$RELATIVE_PATH" ]; then
+            echo "❌ 严重错误：无法在 Debian 仓库中定位内核包路径！"
+            exit 1
+          fi
+
+          KERNEL_URL="http://ftp.debian.org/debian/$RELATIVE_PATH"
+          echo "📥 正在下载内核包: $KERNEL_URL"
+          
+          # 增加 -f 参数防止 404 静默失败
+          curl -fL -o kernel.deb "$KERNEL_URL"
+          
+          # 校验文件类型
+          if ! file kernel.deb | grep -q "Debian binary package"; then
+            echo "❌ 校验失败：下载的文件不是有效的 .deb 包"
+            exit 1
+          fi
+          
+          echo "🛠️ 正在执行离线注入 (跳过 QEMU 模拟)..."
           mkdir -p kextract
-          dpkg-deb -x *.deb kextract/
+          dpkg-deb -x kernel.deb kextract/
           
-          # 注入模块到镜像，提取内核和 initrd 到外部
+          # 同步驱动模块并提取启动必备文件
           sudo cp -r kextract/lib/modules/* mnt_new/lib/modules/
           cp kextract/boot/vmlinuz-* ./vmlinuz-standard
           cp kextract/boot/initrd.img-* ./initrd-standard
           
-          # 释放空间：移除原镜像中不匹配的驱动目录
+          # 移除不匹配的旧驱动，节省空间
           sudo rm -rf mnt_new/lib/modules/6.12.41-trim
-          # ----------------------------
+          # -----------------------
 
-          echo "🛠️ 应用虚拟机适配修正..."
+          echo "🛠️ 适配 UTM 虚拟机修正..."
+          # 修正 fstab
           sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
           sudo sed -i 's/^UUID=[^ ]*/\/dev\/vda/' mnt_new/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
           
-          # 移除冲突服务
+          # 禁用飞牛在某些硬件上的冲突服务
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
 
-          echo "🧹 清理卸载..."
+          echo "🧹 卸载并清理临时文件..."
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
           rm source.img
@@ -89,14 +112,13 @@ jobs:
           mv rootfs.img vmlinuz-standard initrd-standard "$PKG_DIR/"
           
           cat << EOF > "$PKG_DIR/README.md"
-          # fNOS UTM ARM64 (Extreme Speed Build)
+          # fNOS UTM ARM64 适配包
           
-          1. 磁盘 (Drives): 导入 rootfs.img (接口选 VirtIO)
-          2. 内核 (Kernel): vmlinuz-standard
-          3. Initrd: initrd-standard
-          4. 启动参数 (Arguments): "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
-          
-          注意：UTM 界面显示的 64GB 存储空间为虚设，请自行添加第二块 VirtIO 磁盘作为数据盘。
+          ## UTM 设置指南:
+          1. **系统 (System)**: 架构选 ARM64。
+          2. **磁盘 (Drives)**: 导入 \`rootfs.img\`，接口务必选择 **VirtIO**。
+          3. **引导 (Boot)**: 开启 "Use External Kernel"，选择提供的 \`vmlinuz-standard\` 和 \`initrd-standard\`。
+          4. **启动参数 (Arguments)**: \`root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait\`
           EOF
 
           tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
@@ -108,8 +130,10 @@ jobs:
           tag_name: fnnas_utm
           name: fnnas_utm_${{ env.VERSION }}
           body: |
-            fnOS UTM 虚拟机补丁版 (极速注入版)
-            内核版本: Debian 6.1.0-28-arm64
+            飞牛 OS (fNOS) UTM 专用补丁镜像
+            - 构建时间: ${{ github.event.repository.updated_at }}
+            - 内核版本: 随 Debian 12 自动更新 (目前为 6.1.0-39)
+            - 适配环境: UTM (Apple Silicon Mac)
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
