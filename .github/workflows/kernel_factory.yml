@@ -1,86 +1,103 @@
-name: Kernel Factory
+name: 内核工厂
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   check-and-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Host Tools
+      - name: 安装宿主机工具
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support curl debootstrap
+          echo "✅ 宿主机工具准备就绪"
 
-      - name: Check Version Status
-        id: check_ver
+      - name: 版本哨兵 (检查仓库与 Release)
+        id: sentinel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. 获取 Debian 官方仓库目前的最新版本号
+          # 1. 获取 Debian 官方仓库最新的标准版内核全名
           INDEX_URL="http://ftp.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.gz"
-          FULL_NAME=$(curl -s "$INDEX_URL" | zgrep "Package: linux-image-6.1.0-" | awk '{print $2}' | grep -vE "rt|dbg|unsigned|cloud" | sort -V | tail -n 1)
-          KVER=$(echo $FULL_NAME | sed 's/linux-image-//;s/-arm64//')
-          echo "KVER=$KVER" >> $GITHUB_ENV
+          FULL_PACKAGE=$(curl -s "$INDEX_URL" | zgrep "Package: linux-image-6.1.0-" | awk '{print $2}' | grep -vE "rt|dbg|unsigned|cloud" | sort -V | tail -n 1)
           
-          # 2. 检查 GitHub Release 中是否已存在该版本的 initrd
-          # 我们查找是否存在名为 initrd.img-6.1.0-xx-arm64 的文件
+          # 2. 提取精确的版本号后缀
+          K_SUFFIX=$(echo $FULL_PACKAGE | grep -oP '(?<=6\.1\.0-)\d+(?=-arm64)')
+          KVER_FULL="6.1.0-$K_SUFFIX"
+          echo "KVER_FULL=$KVER_FULL" >> $GITHUB_ENV
+          
+          # 3. 检查 GitHub Release (标签为 kernel-assets) 是否已有此文件
           RELEASE_TAG="kernel-assets"
-          EXISTS=$(gh release view "$RELEASE_TAG" --json assets -q ".assets[] | select(.name == \"initrd.img-6.1.0-$KVER-arm64\") | .name" || echo "")
+          EXISTS=$(gh release view "$RELEASE_TAG" --json assets -q ".assets[] | select(.name == \"initrd.img-$KVER_FULL-arm64\") | .name" 2>/dev/null || echo "")
 
           if [ -n "$EXISTS" ]; then
-            echo "✅ 版本 6.1.0-$KVER 已存在于 Release 中，无需重复制作。"
+            echo "🏁 版本 $KVER_FULL 已存在。已经是最新，跳过构建。"
             echo "SKIP_BUILD=true" >> $GITHUB_ENV
           else
-            echo "🚀 发现新版本 6.1.0-$KVER，准备开始构建..."
+            echo "🚀 发现新版本 $KVER_FULL，准备开始工厂构建..."
             echo "SKIP_BUILD=false" >> $GITHUB_ENV
           fi
 
-      - name: Build ARM64 Environment and Generate Kernel
+      - name: 构建 ARM64 环境
         if: env.SKIP_BUILD == 'false'
         run: |
-          echo "🏗️ 正在构建最小化 ARM64 环境 (版本: 6.1.0-${{ env.KVER }})..."
-          sudo debootstrap --arch=arm64 --variant=minbase bookworm chroot http://ftp.debian.org/debian/
+          echo "🏗️ 正在通过 debootstrap 构建 ARM64 最小化系统..."
+          echo "⚠️ 此步骤涉及 QEMU 模拟解压，约耗时 5-10 分钟，请勿关闭。"
+          
+          sudo debootstrap --arch=arm64 --variant=minbase --merged-usr bookworm chroot http://ftp.debian.org/debian/
           
           sudo cp /usr/bin/qemu-aarch64-static chroot/usr/bin/
           sudo mount --bind /dev chroot/dev
           sudo mount --bind /proc chroot/proc
           sudo mount --bind /sys chroot/sys
+          echo "✅ 环境构建完成"
 
-          echo "⏳ 正在 Chroot 环境内生成内核与 Initrd (zstd)..."
+      - name: 生成内核与 Initrd (zstd 压缩)
+        if: env.SKIP_BUILD == 'false'
+        run: |
+          echo "⏳ 正在 Chroot 环境内安装内核并执行 zstd 压缩..."
           sudo chroot chroot /bin/bash -c "
             apt-get update
-            apt-get install -y initramfs-tools kmod --no-install-recommends
-            apt-get install -y linux-image-6.1.0-${{ env.KVER }}-arm64
+            apt-get install -y initramfs-tools kmod zstd --no-install-recommends
+            
+            # 安装探测到的最新版本内核
+            apt-get install -y linux-image-${{ env.KVER_FULL }}-arm64
+            
+            # 强制设定为 zstd 压缩模式
             sed -i 's/COMPRESS=.*/COMPRESS=zstd/g' /etc/initramfs-tools/initramfs.conf
-            update-initramfs -c -k 6.1.0-${{ env.KVER }}-arm64
+            
+            # 生成引导镜像
+            update-initramfs -c -k ${{ env.KVER_FULL }}-arm64
           "
-
-          cp chroot/boot/vmlinuz-6.1.0-${{ env.KVER }}-arm64 ./vmlinuz-6.1.0-${{ env.KVER }}-arm64
-          cp chroot/boot/initrd.img-6.1.0-${{ env.KVER }}-arm64 ./initrd.img-6.1.0-${{ env.KVER }}-arm64
           
-          sudo umount chroot/dev chroot/proc chroot/sys
+          cp chroot/boot/vmlinuz-${{ env.KVER_FULL }}-arm64 ./vmlinuz-${{ env.KVER_FULL }}-arm64
+          cp chroot/boot/initrd.img-${{ env.KVER_FULL }}-arm64 ./initrd.img-${{ env.KVER_FULL }}-arm64
+          
+          sudo umount -l chroot/dev chroot/proc chroot/sys
+          echo "✅ 引导文件生成成功"
 
-      - name: Upload to Release
+      - name: 上传文件至 Release
         if: env.SKIP_BUILD == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: kernel-assets
+          name: "Debian 内核组件工厂"
           files: |
-            vmlinuz-6.1.0-${{ env.KVER }}-arm64
-            initrd.img-6.1.0-${{ env.KVER }}-arm64
-          body: "Debian 6.1 标准内核组件库 (zstd 压缩版 - 自动化工厂产出)"
+            vmlinuz-${{ env.KVER_FULL }}-arm64
+            initrd.img-${{ env.KVER_FULL }}-arm64
+          body: "此 Release 用于存放自动生成的标准内核文件。构建版本: ${{ env.KVER_FULL }}"
           append_body: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Final Summary
+      - name: 任务总结
         run: |
+          echo "### 构建总结" >> $GITHUB_STEP_SUMMARY
           if [ "${{ env.SKIP_BUILD }}" == "true" ]; then
-            echo "--------------------------------------------------"
-            echo "  🏁 任务结束: 已经是最新版本 (${{ env.KVER }})，未执行构建。"
-            echo "--------------------------------------------------"
+            echo "状态: ✅ 跳过 (已经是最新版本)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "--------------------------------------------------"
-            echo "  🎉 任务结束: 新版本 (${{ env.KVER }}) 构建并上传成功！"
-            echo "--------------------------------------------------"
+            echo "状态: 🎉 成功 (已创建版本 ${{ env.KVER_FULL }})" >> $GITHUB_STEP_SUMMARY
           fi
