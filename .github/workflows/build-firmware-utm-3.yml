@@ -1,4 +1,4 @@
-name: fNOS UTM Patcher (Strict Extraction)
+name: Patch fNOS Image for UTM (Standard Kernel)
 on:
   workflow_dispatch:
 
@@ -15,8 +15,8 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd curl file qemu-user-static
-          echo "✅ 基础工具安装完成"
+          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd curl
+          echo "✅ 基础依赖安装完成"
 
       - name: Get Latest Release Info and Download
         id: get_info
@@ -27,65 +27,92 @@ jobs:
           TAG="fnnas_base_image"
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | \
-            sort -V | tail -n 1)
+            sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
+            sort -n | tail -n 1 | cut -d' ' -f2-)
           
-          VERSION=$(echo "$LATEST_ASSET" | grep -oP '\d+(?=\.img\.xz)')
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)')" >> $GITHUB_ENV
           echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
           gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
 
-      - name: Decompress and Inject Kernel
+      - name: Decompress and Patch Image
         run: |
-          # 1. 解压与挂载 (保留你的原逻辑)
+          echo "📦 正在解压新镜像..."
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
+          
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
+          
+          # 1. 严格保留你验证过的提取挂载逻辑
+          echo "💾 正在提取并挂载 Rootfs..."
           mkdir -p mnt_new
           sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
           sudo mount rootfs.img mnt_new
 
-          # 2. 【修复点】先在外面下载，再拷贝进去
+          # 2. 【版本哨兵】检测官方最新内核
+          echo "🔍 正在检查 Debian 官方仓库内核状态..."
           INDEX_URL="http://ftp.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.gz"
-          RELATIVE_PATH=$(curl -s "$INDEX_URL" | zgrep -A 20 "Package: linux-image-6.1.0-.*-arm64$" | grep "Filename:" | head -n 1 | awk '{print $2}')
-          KERNEL_URL="http://ftp.debian.org/debian/$RELATIVE_PATH"
+          LATEST_KVER_FULL=$(curl -s "$INDEX_URL" | zgrep "Package: linux-image-6.1.0-" | awk '{print $2}' | grep -vE "rt|dbg|unsigned|cloud" | sort -V | tail -n 1)
+          LATEST_KVER=$(echo $LATEST_KVER_FULL | sed 's/linux-image-//;s/-arm64//')
+          echo "OFFICIAL_KVER=$LATEST_KVER" >> $GITHUB_ENV
+
+          # 3. 识别你仓库里当前使用的引导文件版本
+          # 假设你的文件名格式为: vmlinuz-6.1.0-42-arm64
+          LOCAL_KVER=$(ls boot_files/vmlinuz-* | grep -oP '6\.1\.0-\d+' | head -n 1)
+          echo "LOCAL_KVER=$LOCAL_KVER" >> $GITHUB_ENV
+          echo "📢 仓库本地版本: $LOCAL_KVER | 官方最新版本: $LATEST_KVER"
+
+          # 4. 驱动注入逻辑：下载与本地引导文件版本一致的 .deb 包
+          # 这样可以确保 rootfs 里的驱动模块 (/lib/modules) 与你的 vmlinuz/initrd 完美匹配
+          RELATIVE_PATH=$(curl -s "$INDEX_URL" | zgrep -A 20 "Package: linux-image-$LOCAL_KVER-arm64$" | grep "Filename: " | awk '{print $2}' | head -n 1)
           
-          echo "📥 正在下载内核包到宿主机..."
-          curl -fL -o kernel_arm64.deb "$KERNEL_URL"
+          echo "📥 正在下载版本 $LOCAL_KVER 的驱动模块..."
+          curl -fL -o kernel.deb "http://ftp.debian.org/debian/$RELATIVE_PATH"
           
-          # 用 sudo 搬运，解决权限问题
-          sudo cp kernel_arm64.deb mnt_new/kernel.deb
+          # 清理旧模块并注入匹配模块
+          sudo rm -rf mnt_new/lib/modules/*
+          sudo dpkg-deb -x kernel.deb mnt_new/
 
-          # 3. 进入 Chroot 注入
-          sudo mount --bind /dev mnt_new/dev
-          sudo mount --bind /proc mnt_new/proc
-          sudo mount --bind /sys mnt_new/sys
-          sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/
+          # 5. 提取本地引导文件准备打包
+          cp boot_files/vmlinuz-$LOCAL_KVER-arm64 ./vmlinuz-standard
+          cp boot_files/initrd.img-$LOCAL_KVER-arm64 ./initrd-standard
 
-          echo "🚀 执行 Chroot 安装..."
-          sudo chroot mnt_new /usr/bin/dpkg -i --force-all /kernel.deb
-
-          # 4. 提取与清理 (保留你的原逻辑)
-          KVER=$(ls mnt_new/lib/modules/ | grep "6.1.0" | sort -V | tail -n 1)
-          sudo cp mnt_new/boot/vmlinuz-$KVER ./vmlinuz-standard
-          sudo cp mnt_new/boot/initrd.img-$KVER ./initrd-standard
-          sudo chown runner:docker ./vmlinuz-standard ./initrd-standard
-
-          sudo rm -rf mnt_new/lib/modules/6.12.*-trim
+          # 6. 应用虚拟机适配修正 (保留你的原逻辑)
+          echo "🛠️ 应用虚拟机适配修正..."
           sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
           
-          sudo umount -l mnt_new/dev mnt_new/proc mnt_new/sys
+          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
+          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
+
+          # 7. 彻底清理卸载
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
-          rm source.img kernel_arm64.deb
+          rm source.img kernel.deb
+          echo "✅ 补丁处理完成"
 
       - name: Final Packaging
         run: |
           PKG_DIR="fn_utm_${{ env.VERSION }}"
           mkdir -p "$PKG_DIR"
-          # 严格保留你的原打包逻辑，只移动你要求的三个文件
           mv rootfs.img vmlinuz-standard initrd-standard "$PKG_DIR/"
           
+          # 在 README 中记录版本对比
+          cat << EOF > "$PKG_DIR/README.md"
+          # fNOS UTM ARM64 (Handcrafted Kernel Mode)
+          
+          - 飞牛镜像版本: ${{ env.VERSION }}
+          - 引导内核版本: ${{ env.LOCAL_KVER }}
+          - 官方仓库最新: ${{ env.OFFICIAL_KVER }}
+          
+          ${{ env.LOCAL_KVER != env.OFFICIAL_KVER && '⚠️ 注意：Debian 官方已更新，建议在本地 ARM 虚拟机生成新内核后替换 boot_files 目录文件。' || '✅ 当前引导文件已是官方最新版本。' }}
+          
+          ## UTM 配置指南
+          1. 磁盘: rootfs.img (Interface: VirtIO)
+          2. 内核: vmlinuz-standard
+          3. Initrd: initrd-standard
+          4. 参数: "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
+          EOF
+
           tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
           echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> $GITHUB_ENV
 
@@ -93,6 +120,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: fnnas_utm
+          name: fnnas_utm_${{ env.VERSION }}
+          body: |
+            fnOS UTM 补丁版
+            - 飞牛版本: ${{ env.VERSION }}
+            - 内核版本: ${{ env.LOCAL_KVER }}
+            - 官方状态: ${{ env.OFFICIAL_KVER }}
           files: ${{ env.FINAL_PKG_NAME }}
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
