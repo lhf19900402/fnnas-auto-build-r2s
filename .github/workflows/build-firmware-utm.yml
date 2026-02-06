@@ -91,13 +91,13 @@ jobs:
           echo "🛠️ 正在应用虚拟机适配修正..."
           sudo mount rootfs.img mnt_new
 
-          echo ">>> [修改前] fstab 内容:"
-          cat mnt_new/etc/fstab
-          # 修正 fstab：禁用 boot 分区挂载，并将根目录设为 vda
-          sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
-          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
-          echo ">>> [修改后] fstab 内容:"
-          cat mnt_new/etc/fstab
+          # echo ">>> [修改前] fstab 内容:"
+          # cat mnt_new/etc/fstab
+          # # 修正 fstab：禁用 boot 分区挂载，并将根目录设为 vda
+          # sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
+          # sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
+          # echo ">>> [修改后] fstab 内容:"
+          # cat mnt_new/etc/fstab
           
           # 移除物理硬件冲突服务
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
