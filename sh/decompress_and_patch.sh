@@ -77,6 +77,17 @@ EOF
 
 WORK_TMP="$WORKDIR/fn_utm_work"
 mkdir -p "$WORK_TMP"
+# 如果是在 GitHub Actions 环境，确保 XZ_FILE 指向可用的路径（下载到工作区根目录）
+if [ "$is_github" = true ]; then
+  if [ ! -f "$XZ_FILE" ]; then
+    if [ -f "$WORKDIR/$XZ_FILE" ]; then
+      XZ_FILE="$WORKDIR/$XZ_FILE"
+    elif [ -f "$DIR/$XZ_FILE" ]; then
+      XZ_FILE="$DIR/$XZ_FILE"
+    fi
+  fi
+fi
+
 cd "$WORK_TMP"
 
 echo "正在解压 xz 到 source.img"
