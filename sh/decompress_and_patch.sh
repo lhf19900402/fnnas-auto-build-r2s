@@ -77,13 +77,21 @@ EOF
 
 WORK_TMP="$WORKDIR/fn_utm_work"
 mkdir -p "$WORK_TMP"
-# 如果是在 GitHub Actions 环境，确保 XZ_FILE 指向可用的路径（下载到工作区根目录）
+# 如果是在 GitHub Actions 环境，尝试在工作区查找下载的文件并输出调试信息
 if [ "$is_github" = true ]; then
   if [ ! -f "$XZ_FILE" ]; then
-    if [ -f "$WORKDIR/$XZ_FILE" ]; then
-      XZ_FILE="$WORKDIR/$XZ_FILE"
-    elif [ -f "$DIR/$XZ_FILE" ]; then
-      XZ_FILE="$DIR/$XZ_FILE"
+    echo "在工作区查找 $XZ_FILE..."
+    search_root="${GITHUB_WORKSPACE:-$WORKDIR}"
+    FOUND=$(find "$search_root" -maxdepth 3 -type f -name "$(basename "$XZ_FILE")" -print -quit 2>/dev/null || true)
+    if [ -n "$FOUND" ]; then
+      XZ_FILE="$FOUND"
+      echo "定位到 XZ 文件：$XZ_FILE"
+    else
+      if [ -f "$WORKDIR/$XZ_FILE" ]; then
+        XZ_FILE="$WORKDIR/$XZ_FILE"
+      elif [ -f "$DIR/$XZ_FILE" ]; then
+        XZ_FILE="$DIR/$XZ_FILE"
+      fi
     fi
   fi
 fi
