@@ -18,6 +18,17 @@ echo "模式：$( [ "$is_github" = true ] && echo '云端 (GitHub Actions)' || e
 
 # find xz file
 if [ "$is_github" = true ]; then
+  echo "【GitHub 模式调试】GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-未设置}"
+  echo "【GitHub 模式调试】WORKDIR: $WORKDIR"
+  echo "【GitHub 模式调试】当前目录: $(pwd)"
+  echo "【GitHub 模式调试】SOURCE_FILE 环境变量: ${SOURCE_FILE:-未设置}"
+  
+  # 列出当前目录和 WORKDIR 所有 .img.xz 文件
+  echo "【GitHub 模式调试】当前目录中的 .img.xz 文件："
+  ls -la $(pwd)/*.img.xz 2>/dev/null | head -20 || echo "  (未找到)"
+  echo "【GitHub 模式调试】WORKDIR 中的 .img.xz 文件："
+  ls -la "$WORKDIR"/*.img.xz 2>/dev/null | head -20 || echo "  (未找到)"
+  
   XZ_FILE="${SOURCE_FILE:-}"
   if [ -z "$XZ_FILE" ]; then
     # fallback: try to find any .img.xz in workspace
@@ -30,6 +41,8 @@ if [ "$is_github" = true ]; then
       XZ_FILE="$WORKDIR/$XZ_FILE"
     elif [ -f "/github/workspace/$XZ_FILE" ]; then
       XZ_FILE="/github/workspace/$XZ_FILE"
+    elif [ -f "$(pwd)/$XZ_FILE" ]; then
+      XZ_FILE="$(pwd)/$XZ_FILE"
     fi
   fi
 else
