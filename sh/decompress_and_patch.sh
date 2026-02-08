@@ -101,6 +101,18 @@ EOF
 
 WORK_TMP="$WORKDIR/fn_utm_work"
 mkdir -p "$WORK_TMP"
+
+# 确保 XZ_FILE 是绝对路径（很关键！否则进入 WORK_TMP 后找不到文件）
+if [[ "$XZ_FILE" != /* ]]; then
+  XZ_FILE="$WORKDIR/$XZ_FILE"
+fi
+
+echo "【XZ_FILE 绝对路径验证】$XZ_FILE"
+if [ ! -f "$XZ_FILE" ]; then
+  echo "错误：XZ 文件不存在: $XZ_FILE"
+  exit 1
+fi
+
 cd "$WORK_TMP"
 
 echo "正在解压 xz 到 source.img"
