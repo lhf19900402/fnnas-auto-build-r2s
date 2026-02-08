@@ -23,12 +23,23 @@ if [ "$is_github" = true ]; then
     # fallback: try to find any .img.xz in workspace
     XZ_FILE=$(ls -1 $WORKDIR/*.img.xz 2>/dev/null | head -n1 || true)
   fi
+  # 在 GitHub Actions 中，将相对路径转换为绝对路径
+  if [ -n "$XZ_FILE" ] && [ ! -f "$XZ_FILE" ]; then
+    # 测试是否在工作目录中
+    if [ -f "$WORKDIR/$XZ_FILE" ]; then
+      XZ_FILE="$WORKDIR/$XZ_FILE"
+    elif [ -f "/github/workspace/$XZ_FILE" ]; then
+      XZ_FILE="/github/workspace/$XZ_FILE"
+    fi
+  fi
 else
   XZ_FILE=$(ls -1 "$DIR"/*.img.xz 2>/dev/null | sort -V | tail -n1 || true)
 fi
 
 if [ -z "$XZ_FILE" ] || [ ! -f "$XZ_FILE" ]; then
   echo "错误：未找到 .img.xz 文件（查看：$XZ_FILE）"
+  echo "当前工作目录：$WORKDIR"
+  echo "脚本目录：$DIR"
   exit 1
 fi
 
@@ -77,25 +88,6 @@ EOF
 
 WORK_TMP="$WORKDIR/fn_utm_work"
 mkdir -p "$WORK_TMP"
-# 如果是在 GitHub Actions 环境，尝试在工作区查找下载的文件并输出调试信息
-if [ "$is_github" = true ]; then
-  if [ ! -f "$XZ_FILE" ]; then
-    echo "在工作区查找 $XZ_FILE..."
-    search_root="${GITHUB_WORKSPACE:-$WORKDIR}"
-    FOUND=$(find "$search_root" -maxdepth 3 -type f -name "$(basename "$XZ_FILE")" -print -quit 2>/dev/null || true)
-    if [ -n "$FOUND" ]; then
-      XZ_FILE="$FOUND"
-      echo "定位到 XZ 文件：$XZ_FILE"
-    else
-      if [ -f "$WORKDIR/$XZ_FILE" ]; then
-        XZ_FILE="$WORKDIR/$XZ_FILE"
-      elif [ -f "$DIR/$XZ_FILE" ]; then
-        XZ_FILE="$DIR/$XZ_FILE"
-      fi
-    fi
-  fi
-fi
-
 cd "$WORK_TMP"
 
 echo "正在解压 xz 到 source.img"
