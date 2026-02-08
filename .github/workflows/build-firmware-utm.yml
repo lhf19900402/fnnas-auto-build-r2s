@@ -20,137 +20,53 @@ jobs:
 
       - name: Get Latest Release Info and Download
         id: get_info
-        env: 
-         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-         REPO="ophub/fnnas"
-         TAG="fnnas_base_image"
-        
-         echo "🔍 正在搜索包含 'rockchip' 的最新附件..."
-        
-         # 在 select 中增加了对 "rockchip" 字符串的判断
-         LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
-          -q '.assets[] | select(.name | (endswith(".img.xz") and contains("rockchip"))) | .name' | \
-          sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
-          sort -n | \
-          tail -n 1 | \
-          cut -d' ' -f2-)
-        
-         if [ -z "$LATEST_ASSET" ]; then
-          echo "❌ 错误：未找到包含 'rockchip' 且后缀为 .img.xz 的附件"
-          exit 1
-         fi
-        
-         echo "🎯 锁定最新镜像: $LATEST_ASSET"
-         VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)' || echo "unknown")
-        
-         # 写入环境变量 (兼容 GitHub Actions 环境)
-         if [ -n "$GITHUB_ENV" ]; then
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
-         fi
-        
-         echo "📥 开始下载: $LATEST_ASSET"
-         gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
-  
-      - name: Decompress and Patch Image
+          REPO="ophub/fnnas"
+          TAG="fnnas_base_image"
+
+          echo "🔍 正在搜索包含 'rockchip' 的最新附件..."
+
+          LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
+           -q '.assets[] | select(.name | (endswith(".img.xz") and contains("rockchip"))) | .name' | \
+           sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
+           sort -n | \
+           tail -n 1 | \
+           cut -d' ' -f2-)
+
+          if [ -z "$LATEST_ASSET" ]; then
+            echo "❌ 错误：未找到包含 'rockchip' 且后缀为 .img.xz 的附件"
+            exit 1
+          fi
+
+          echo "🎯 锁定最新镜像: $LATEST_ASSET"
+          VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)' || echo "unknown")
+
+          if [ -n "$GITHUB_ENV" ]; then
+            echo "VERSION=$VERSION" >> $GITHUB_ENV
+            echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
+          fi
+
+          echo "📥 开始下载: $LATEST_ASSET"
+          gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
+
+      - name: Run decompress and patch script
         run: |
-          echo "📦 正在解压镜像..."
-          unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
-          rm "${{ env.SOURCE_FILE }}"
-
-          # 启动 Loop 设备并扫描分区
-          sudo losetup -D
-          LOOP_DEV=$(sudo losetup -Pf --show source.img)
-          mkdir -p mnt_p1 mnt_new
-
-          # 1. 提取内核组件 (保持动态命名逻辑)
-          echo "📂 正在探测原始内核文件..."
-          sudo mount -o ro "${LOOP_DEV}p1" mnt_p1
-          KERNEL_PATH=$(sudo find mnt_p1 -name "vmlinuz-*" ! -name "*.old" | sort -V | tail -n 1)
-          INITRD_PATH=$(sudo find mnt_p1 -name "initrd.img-*" ! -name "*.old" | sort -V | tail -n 1)
-          
-          RAW_KERNEL=$(basename "$KERNEL_PATH")
-          RAW_INITRD=$(basename "$INITRD_PATH")
-          
-          cp "$KERNEL_PATH" ./"$RAW_KERNEL"
-          cp "$INITRD_PATH" ./"$RAW_INITRD"
-          
-          echo "RAW_KERNEL=$RAW_KERNEL" >> $GITHUB_ENV
-          echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
-          sudo umount mnt_p1
-
-          # 2. 提取 P2 分区 (脚本 1 核心逻辑：Block-to-Block 拷贝)
-          echo "💾 正在克隆 P2 分区到 rootfs.img..."
-          sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
-          
-          # 卸载原 loop 设备，释放资源
-          sudo losetup -d $LOOP_DEV
-
-          # 3. 挂载新生成的 rootfs.img 进行适配修正 (脚本 1 核心逻辑)
-          echo "🛠️ 正在应用虚拟机适配修正..."
-          sudo mount rootfs.img mnt_new
-
-          # echo ">>> [修改前] fstab 内容:"
-          cat mnt_new/etc/fstab
-          # 修正 fstab：禁用 boot 分区挂载，并将根目录设为 vda
-          sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
-          # echo ">>> [修改后] fstab 内容:"
-          cat mnt_new/etc/fstab
-          
-          # 移除物理硬件冲突服务
-          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
-          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
-
-          # 强制刷新缓存并卸载
-          sync
-          sudo umount mnt_new
-          
-          rm source.img
-          echo "✅ 修复完成，根分区已适配为 /dev/vda"
-
-      - name: Create README for UTM
-        run: |
-          cat << EOF > README.md
-          # fNOS UTM 虚拟机使用说明 (v${{ env.VERSION }})
-
-          ## 🚀 UTM 配置关键点
-          1. **驱动器**: 导入 \`rootfs.img\`，接口选择 **VirtIO**。
-          2. **高级**:
-             - 勾选 **"使用本地内核/initrd"**。
-             - **External Kernel**: 选择 \`${{ env.RAW_KERNEL }}\`。
-             - **Initrd**: 选择 \`${{ env.RAW_INITRD }}\`。
-          3. **启动参数 (Arguments)**:
-             请在 QEMU 参数最后一栏填入（包含引号）：
-             \`\`\`text
-             -append
-             "root=/dev/vda rw console=tty0 console=ttyAMA0 earlycon"
-             \`\`\`
-          EOF
-
-      - name: Final Packaging (Tar + XZ)
-        run: |
-          PKG_DIR="fn_utm_${{ env.VERSION }}"
-          mkdir -p "$PKG_DIR"
-          
-          mv rootfs.img "$PKG_DIR/"
-          mv "${{ env.RAW_KERNEL }}" "$PKG_DIR/"
-          mv "${{ env.RAW_INITRD }}" "$PKG_DIR/"
-          mv README.md "$PKG_DIR/"
-          
-          echo "🗜️ 正在打包压缩..."
-          tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
-          
-          echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> $GITHUB_ENV
+          chmod +x sh/decompress_and_patch.sh
+          sh/decompress_and_patch.sh
+        env:
+          SOURCE_FILE: ${{ env.SOURCE_FILE }}
+          VERSION: ${{ env.VERSION }}
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: fnnas_utm
-          name: fnnas_utm_${{ env.VERSION }}
+          name: fnnas_utm_${{ github.env.VERSION }}
           body: |
-            fnOS UTM 虚拟机 ARM 版 
-          files: ${{ env.FINAL_PKG_NAME }}
+            fnOS UTM 虚拟机 ARM 版
+          files: ${{ github.env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
         env:
