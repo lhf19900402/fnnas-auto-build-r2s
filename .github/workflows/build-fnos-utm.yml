@@ -1,4 +1,4 @@
-name: Patch fNOS Image for UTM
+name: Patch fNOS for UTM
 on:
   workflow_dispatch: # 手动触发
 
@@ -28,6 +28,14 @@ jobs:
 
           echo "🔍 正在搜索包含 'rockchip' 的最新附件..."
 
+          # 获取指定release中包含rockchip且以.img.xz结尾的最新附件文件名
+          # 该命令通过以下步骤实现：
+          # 1. 使用gh cli查询指定tag的release信息，提取assets数组中的文件名
+          # 2. 筛选出同时满足两个条件的文件：以.img.xz结尾且文件名包含rockchip
+          # 3. 使用sed提取文件名中的版本号前缀，并将其添加到行首用于排序
+          # 4. 按数字顺序排序，确保版本号高的在最后
+          # 5. 取最后一个（即版本号最大的）文件
+          # 6. 移除之前添加的版本号前缀，恢复原始文件名
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
            -q '.assets[] | select(.name | (endswith(".img.xz") and contains("rockchip"))) | .name' | \
            sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
@@ -44,10 +52,19 @@ jobs:
           VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)' || echo "unknown")
 
           if [ -n "$GITHUB_ENV" ]; then
+            # 将提取的版本号和源文件名写入GitHub环境变量
+            # 使后续步骤可以通过${{ env.VERSION }}和${{ env.SOURCE_FILE }}访问这些变量
             echo "VERSION=$VERSION" >> $GITHUB_ENV
             echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
           fi
 
+          # 下载指定Release中的固件镜像文件
+          # 使用gh CLI工具从目标仓库的指定标签下载匹配模式的资产文件
+          # 参数说明:
+          # - "$TAG": 要下载的Release标签名称
+          # - -R "$REPO": 指定目标仓库地址
+          # - -p "$LATEST_ASSET": 指定要下载的资产文件名模式
+          # - --clobber: 覆盖已存在的同名文件
           echo "📥 开始下载: $LATEST_ASSET"
           gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
 

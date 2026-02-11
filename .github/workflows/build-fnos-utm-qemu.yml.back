@@ -1,4 +1,4 @@
-name: Patch fNOS Image for UTM
+name: Patch fNOS for UTM
 on:
   workflow_dispatch:
 

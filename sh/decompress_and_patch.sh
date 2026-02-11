@@ -16,22 +16,12 @@ fi
 
 echo "模式：$( [ "$is_github" = true ] && echo '云端 (GitHub Actions)' || echo '本地' )"
 
-# find xz file
+# 获取 XZ_FILE
 if [ "$is_github" = true ]; then
-  echo "【GitHub 模式调试】GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-未设置}"
-  echo "【GitHub 模式调试】WORKDIR: $WORKDIR"
-  echo "【GitHub 模式调试】当前目录: $(pwd)"
-  echo "【GitHub 模式调试】SOURCE_FILE 环境变量: ${SOURCE_FILE:-未设置}"
-  
-  # 列出当前目录和 WORKDIR 所有 .img.xz 文件
-  echo "【GitHub 模式调试】当前目录中的 .img.xz 文件："
-  ls -la $(pwd)/*.img.xz 2>/dev/null | head -20 || echo "  (未找到)"
-  echo "【GitHub 模式调试】WORKDIR 中的 .img.xz 文件："
-  ls -la "$WORKDIR"/*.img.xz 2>/dev/null | head -20 || echo "  (未找到)"
-  
+  # 优先使用 SOURCE_FILE 环境变量，如果未设置则尝试在 WORKDIR 中找到 .img.xz 文件
   XZ_FILE="${SOURCE_FILE:-}"
   if [ -z "$XZ_FILE" ]; then
-    # fallback: try to find any .img.xz in workspace
+    # 没有 SOURCE_FILE，尝试在 WORKDIR 中找到 .img.xz 文件
     XZ_FILE=$(ls -1 $WORKDIR/*.img.xz 2>/dev/null | head -n1 || true)
   fi
   # 在 GitHub Actions 中，将相对路径转换为绝对路径
@@ -46,6 +36,7 @@ if [ "$is_github" = true ]; then
     fi
   fi
 else
+  # 默认使用脚本同目录下的 .img.xz 文件
   XZ_FILE=$(ls -1 "$DIR"/*.img.xz 2>/dev/null | sort -V | tail -n1 || true)
 fi
 
@@ -58,7 +49,7 @@ fi
 
 echo "使用的 XZ 文件：$XZ_FILE"
 
-# derive VERSION
+# 获取 VERSION
 if [ -n "${VERSION:-}" ]; then
   VER="$VERSION"
 else
@@ -167,8 +158,7 @@ sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.servi
 sync
 sudo umount mnt_new
 
-# At this point, rootfs.img exists in WORK_TMP
-
+# 根据模式不同，输出结果
 if [ "$is_github" = true ]; then
   PKG_DIR="fn_utm_${VER}"
   mkdir -p "$PKG_DIR"
@@ -177,17 +167,15 @@ if [ "$is_github" = true ]; then
   mv "$WORKDIR/$RAW_KERNEL" "$PKG_DIR/"
   mv "$WORKDIR/$RAW_INITRD" "$PKG_DIR/"
 
-  # create README in PKG_DIR (use shared template)
+  # 使用共享模板写入 README
   write_readme "$PKG_DIR/README.md"
 
   echo "正在打包并压缩 ${PKG_DIR}.tar.xz"
   tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
 
-  # expose final package name for GitHub Actions
+  # 输出环境变量供后续步骤使用
   if [ -n "${GITHUB_ENV:-}" ]; then
     echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> "$GITHUB_ENV"
-    echo "RAW_KERNEL=$RAW_KERNEL" >> "$GITHUB_ENV"
-    echo "RAW_INITRD=$RAW_INITRD" >> "$GITHUB_ENV"
     echo "VERSION=$VER" >> "$GITHUB_ENV"
   fi
 
